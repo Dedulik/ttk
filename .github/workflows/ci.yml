@@ -1,0 +1,22 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r backend/requirements.txt
+      - run: python -m unittest discover -s tests -v
+        working-directory: backend
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Проверка синтаксиса модулей
+        run: for f in $(find frontend/src -name '*.js'); do node --check "$f"; done
+      - name: Проверка шаблона карты
+        run: node -e "const m=require('./frontend/data/template_map.json'); for (const k of ['shapes','pois','panos','links']) if(!Array.isArray(m[k])) throw new Error(k); console.log('ok', m.shapes.length, 'фигур')"

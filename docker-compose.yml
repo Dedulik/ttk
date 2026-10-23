@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-change-me-please}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@arena.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-1}
+    volumes:
+      - arena-data:/data
+    restart: unless-stopped
+volumes:
+  arena-data:
