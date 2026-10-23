@@ -1,0 +1,29 @@
+"""Настройки. Любое значение переопределяется переменной окружения (см. .env.example)."""
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
+REPO_DIR = BASE_DIR.parent
+
+
+def env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def load() -> dict:
+    return {
+        "SECRET_KEY": env("SECRET_KEY", "dev-only-change-me"),
+        "TOKEN_TTL_MIN": int(env("TOKEN_TTL_MIN", "720")),
+        "DB_PATH": env("DB_PATH", str(BASE_DIR / "data" / "app.db")),
+        "UPLOAD_DIR": env("UPLOAD_DIR", str(BASE_DIR / "data" / "uploads")),
+        "FRONTEND_DIR": env("FRONTEND_DIR", str(REPO_DIR / "frontend")),
+        "TEMPLATE_PATH": env("TEMPLATE_PATH", str(REPO_DIR / "frontend" / "data" / "template_map.json")),
+        "MAX_UPLOAD_MB": int(env("MAX_UPLOAD_MB", "15")),
+        "MAX_MAP_BYTES": int(env("MAX_MAP_BYTES", str(2 * 1024 * 1024))),
+        "CORS_ORIGINS": [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()],
+        # первый администратор создаётся при пустой базе — смените пароль после входа
+        "ADMIN_EMAIL": env("ADMIN_EMAIL", "admin@arena.local"),
+        "ADMIN_PASSWORD": env("ADMIN_PASSWORD", "admin12345"),
+        "SEED_DEMO_USERS": env("SEED_DEMO_USERS", "1") == "1",
+        "VENUE_SLUG": "rostov-arena",
+    }
