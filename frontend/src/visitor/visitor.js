@@ -120,9 +120,8 @@ export async function mountVisitor(root, api) {
   function home() {
     S.sel = null; S.list = null; sync(); if (!S.look) setHash('');
     const stands = ['A', 'B', 'C', 'D'].map((k) => `<button class="item stand-row" data-go="sec:${k}${NUMS.lower[k][0]}"><span class="bar" style="background:${map.style.stands[k] || STANDS[k].c}"></span><span class="t"><b>${STANDS[k].n}</b><span>${k}${NUMS.lower[k][0]}–${k}${NUMS.lower[k][1]} · ${k}${NUMS.upper[k][0]}–${k}${NUMS.upper[k][1]}</span></span>${icon('chevron', 'chev')}</button>`).join('');
-    const intro = stadium ? 'Стадион, Арена Экспо и вся территория' : pub.venue?.description || 'Карта объекта';
     sheet.set(`
-      <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · ${pub.draft ? 'черновик, ещё не опубликован' : 'версия карты ' + pub.number}${api.demo ? ' · демо' : ''}</p>
+      <div class="home-head"><h1>${esc(title)}</h1>
         ${byParam ? `<a class="txt-btn" href="?by=${encodeURIComponent(byParam)}" style="align-self:flex-start">← Все карты автора</a>` : ''}</div>
       ${lastPano() ? `<button class="item resume" data-pano="${lastPano().id}">${badge('pano', '', '', 'sm', pointIconUrl(lastPano(), 'pano'))}<span class="t"><b>Продолжить с «${esc(lastPano().name)}»</b><span>Последняя открытая панорама</span></span>${icon('chevron', 'chev')}</button>` : ''}
       <button class="ask-card" data-act="ask">${icon('chat')}<span><b>Спросите маскота</b><span>«Где туалет?», «Как пройти на регистрацию?» — покажу на карте и проложу маршрут</span></span></button>
