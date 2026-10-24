@@ -117,7 +117,8 @@ def create_app(overrides: dict | None = None) -> Flask:
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         resp.headers["X-Frame-Options"] = "SAMEORIGIN"
-        resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # камера и датчики движения — только для своего сайта (съёмка панорам в конструкторе)
+        resp.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=(), gyroscope=(self), accelerometer=(self), magnetometer=(self)"
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
         if request.path.endswith("/sw.js"):

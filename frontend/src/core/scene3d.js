@@ -10,6 +10,36 @@ import { iconImage, iconsReady, pointIconImage } from './icons.js';
 import { hideTip, showTip } from './ui.js';
 
 const PI = Math.PI;
+
+/**
+ * Отрезки стен, лежащие на одной прямой (общие стены соседних комнат, стена здания вдоль стены комнаты), сливаются:
+ * перекрывающиеся интервалы объединяются, толщина и высота — наибольшие. Так в одном месте строится одна стена.
+ */
+export function mergeWalls(segs) {
+  const groups = new Map(), out = [];
+  for (const s of segs) {
+    let dx = s.b[0] - s.a[0], dy = s.b[1] - s.a[1]; const L = Math.hypot(dx, dy); if (L < 0.01) continue;
+    dx /= L; dy /= L;
+    if (dx < -1e-9 || (Math.abs(dx) < 1e-9 && dy < 0)) { dx = -dx; dy = -dy; }          // одно направление для обеих ориентаций
+    const off = -dy * s.a[0] + dx * s.a[1];                                                // расстояние прямой от начала координат
+    const key = `${s.floor}|${Math.round(Math.atan2(dy, dx) * 2000)}|${Math.round(off * 50)}`;
+    const t0 = dx * s.a[0] + dy * s.a[1], t1 = dx * s.b[0] + dy * s.b[1];
+    if (!groups.has(key)) groups.set(key, { dx, dy, off, list: [] });
+    groups.get(key).list.push({ lo: Math.min(t0, t1), hi: Math.max(t0, t1), s });
+  }
+  for (const g of groups.values()) {
+    g.list.sort((a, b) => a.lo - b.lo);
+    let cur = null;
+    const P = (t) => [g.dx * t - g.dy * g.off, g.dy * t + g.dx * g.off];
+    const flush = () => { if (cur) out.push({ ...cur.s, a: P(cur.lo), b: P(cur.hi), t: cur.t, h: cur.h }); };
+    for (const it of g.list) {
+      if (cur && it.lo <= cur.hi + 0.02) { cur.hi = Math.max(cur.hi, it.hi); cur.t = Math.max(cur.t, it.s.t); cur.h = Math.max(cur.h, it.s.h); }
+      else { flush(); cur = { lo: it.lo, hi: it.hi, s: it.s, t: it.s.t, h: it.s.h }; }
+    }
+    flush();
+  }
+  return out;
+}
 const NEAR_ORBIT = 1.5, NEAR_LOOK = 0.2;
 const C = { x: 400, y: 262 };
 const W = (x, y, h = 0) => new THREE.Vector3(x - C.x, h, y - C.y);
@@ -66,6 +96,16 @@ export class Scene3D {
     for (const s of this.screenSprites) this.sizeSprite(s);
   }
   setActive(on) { this.active = on; if (on) this.resize(); this.dirty = true; }
+  /**
+   * Буфер глубины точен пропорционально near: при фиксированных near = 1,5 м и far = 5 км на расстоянии 1 км
+   * глубина различалась лишь с шагом ~4 см — слои пола и стыки стен «дрались» (рябь). Теперь near ≈ 1 % от
+   * расстояния до цели (камера всё равно не подлетает ближе), far — сколько нужно, чтобы видеть всю сцену и туман.
+   */
+  fitDepth() {
+    const c = this.camera, d = c.position.distanceTo(this.controls.target);
+    const near = Math.min(40, Math.max(NEAR_ORBIT, d * 0.012)), far = Math.max(1500, d * 6 + 1200);
+    if (Math.abs(c.near - near) / near > 0.05 || Math.abs(c.far - far) / far > 0.1) { c.near = near; c.far = far; c.updateProjectionMatrix(); }
+  }
 
   // ---------- помощники ----------
   mat(color, o = {}) { return new THREE.MeshStandardMaterial({ color, roughness: 0.88, ...o }); }
@@ -75,14 +115,15 @@ export class Scene3D {
     this.groups[group].add(m); return m;
   }
   /** Плоская фигура на высоте y. lay — высота слоя над полом своего этажа (для смещения глубины). */
-  flat(points, mat, y, group, hole, lay = y) {
+  flat(points, mat, y, group, hole, lay = y, order = 0) {
     const sh = new THREE.Shape(points.map((p) => new THREE.Vector2(p[0] - C.x, p[1] - C.y)));
     if (hole) sh.holes.push(new THREE.Path([...hole].reverse().map((p) => new THREE.Vector2(p[0] - C.x, p[1] - C.y))));
     const g = new THREE.ShapeGeometry(sh, 2); g.rotateX(PI / 2);
     mat.side = THREE.DoubleSide;
-    // слои пола лежат в сантиметрах друг над другом: без смещения глубины они мерцают при обзоре издалека
-    if (lay < 1) Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -(2 + Math.round(lay * 60)) });
-    const m = new THREE.Mesh(g, mat); m.position.y = y; m.receiveShadow = true; this.groups[group].add(m); return m;
+    // слои пола лежат в сантиметрах друг над другом: каждый получает свой уровень смещения глубины (order),
+    // поэтому перекрывающиеся зоны всегда рисуются в одном порядке — меньшая поверх большей
+    if (lay < 1) Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -(2 + Math.round(lay * 60) + order * 3) });
+    const m = new THREE.Mesh(g, mat); m.position.y = y; m.receiveShadow = true; m.renderOrder = order; this.groups[group].add(m); return m;
   }
   beam(group, a, b, r, mat) {
     const d = new THREE.Vector3().subVectors(b, a), L = d.length();
@@ -179,39 +220,47 @@ export class Scene3D {
     const m = this.map, white = this.mat('#ffffff'), ref = (id) => ({ data: { ref: id } }), on = this.on;
     const shapes = [...m.shapes].filter((s) => s.cat !== 'plaza' && on(shapeLayer(s)) && this.vis(s)).sort((a, b) => shapeBox(b).w * shapeBox(b).h - shapeBox(a).w * shapeBox(a).h);
     const shown = new Set(shapes.map((s) => s.id)), freeWall = new Set(m.walls.map((w) => w.id));
+    // фигуры отсортированы от большой к маленькой: каждая следующая лежит на 1 см выше и с большим смещением глубины
+    let layer = 0;
     for (const s of shapes) {
-      const k = kindOf(s), col = new THREE.Color(s.color || catColor(m, s.cat)), c = shapeCenter(s), b = shapeBox(s), z0 = this.z0(s);
+      const k = kindOf(s), col = new THREE.Color(s.color || catColor(m, s.cat)), z0 = this.z0(s), li = ++layer, dz = Math.min(li, 40) * 0.01;
       if (!k.walls) {
         let base = new THREE.Color(this.dark ? '#2b2e33' : '#d9d5cd').lerp(col, s.cat === 'leisure' || s.cat === 'expo' ? 0.35 : 0.6);
         if (s.cat === 'parking' && !s.color) base = new THREE.Color('#5d6167');
         if (s.cat === 'sport' && !s.color) base = new THREE.Color('#3f8f46');
         if (s.cat === 'ice' && !s.color) base = new THREE.Color('#e3f1ff');
-        const lay = s.cat === 'leisure' || s.cat === 'expo' ? 0.08 : 0.16;
-        const z = this.flat(shapePoints(s), this.mat(base), z0 + lay, 'world', null, lay);
+        const lay = 0.04 + dz;
+        const z = this.flat(shapePoints(s), this.mat(base), z0 + lay, 'world', null, lay, li);
         z.userData.ref = s.id;
-        this.decorate(s, col, white, z0);
+        this.decorate(s, col, white, z0 + dz);   // разметка и макеты — над своим слоем пола
       } else {
-        const floor = this.flat(shapePoints(s), this.mat(this.dark ? '#3a3d42' : '#efede8'), z0 + 0.12, 'world', null, 0.12); floor.userData.ref = s.id;
+        const floor = this.flat(shapePoints(s), this.mat(this.dark ? '#3a3d42' : '#efede8'), z0 + 0.04 + dz, 'world', null, 0.04 + dz, li); floor.userData.ref = s.id;
         if (k.roof) {
-          const roof = this.flat(shapePoints(s), this.mat(this.dark ? '#565a60' : '#e9ebee', { roughness: 0.6 }), z0 + (s.height || k.height), 'world', null, 9);
+          // крыша на 3 см выше верха стен: раньше она лежала ровно в плоскости их торцов и мерцала по периметру
+          const roof = this.flat(shapePoints(s), this.mat(this.dark ? '#565a60' : '#e9ebee', { roughness: 0.6 }), z0 + (s.height || k.height) + 0.03, 'world', null, 9);
           roof.userData.ref = s.id; roof.userData.roofOf = s.id; roof.castShadow = true;
         }
       }
       // названия зон не висят над моделью — всплывают подсказкой при наведении (hoverTip)
     }
-    // у соседних помещений общая стена приходит дважды — вторую копию не строим, иначе две грани в одной плоскости дрожат;
-    // частично совпадающие стены разводим по глубине (polygonOffset) — так одна из граней стабильно «побеждает»
-    const wallMat = [0, 1, 2].map((k) => this.mat(this.dark ? '#5d6066' : '#f2f1ee', { polygonOffset: true, polygonOffsetFactor: -k * 0.5, polygonOffsetUnits: -k * 2 })), byColor = {}, seen = new Set();
-    const key = (s) => { const r = (v) => Math.round(v * 20); const p = [r(s.a[0]), r(s.a[1])], q = [r(s.b[0]), r(s.b[1])]; return [s.floor, ...(p[0] < q[0] || (p[0] === q[0] && p[1] <= q[1]) ? [...p, ...q] : [...q, ...p])].join(','); };
-    let wi = 0;
-    for (const seg of wallSegments(m)) {
-      if (freeWall.has(seg.owner) ? !on('walls') || !this.vis(seg) : !shown.has(seg.owner)) continue;
+    // Стены. Раньше: у соседних помещений общая стена приходила дважды (и частично совпадала), а боксы удлинялись на
+    // толщину стены — в углах и на общих участках получались совпадающие грани, которые мерцали (маскировалось
+    // чередованием polygonOffset). Теперь: отрезки на одной прямой сливаются в один (mergeWalls), бокс — ровно
+    // длины отрезка, а стыки закрывает восьмигранный столбик — у него нет граней в плоскости стен.
+    const mats = {}, wmat = (c) => (mats[c || ''] ||= this.mat(c || (this.dark ? '#5d6066' : '#f2f1ee')));
+    const posts = new Map();
+    for (const seg of mergeWalls(wallSegments(m).filter((sg) => (freeWall.has(sg.owner) ? on('walls') && this.vis(sg) : shown.has(sg.owner))))) {
       const dx = seg.b[0] - seg.a[0], dz = seg.b[1] - seg.a[1], L = Math.hypot(dx, dz); if (L < 0.05) continue;
-      const k = key(seg); if (seen.has(k)) continue; seen.add(k);
-      const mat = seg.color ? (byColor[seg.color + (wi % 3)] ||= this.mat(seg.color, { polygonOffset: true, polygonOffsetFactor: -(wi % 3) * 0.5, polygonOffsetUnits: -(wi % 3) * 2 })) : wallMat[wi % 3];
-      wi++;
-      const w = this.add('world', new THREE.BoxGeometry(L + seg.t, seg.h, seg.t), mat, W((seg.a[0] + seg.b[0]) / 2, (seg.a[1] + seg.b[1]) / 2, this.z0(seg) + seg.h / 2), ref(seg.owner));
+      const z0 = this.z0(seg), w = this.add('world', new THREE.BoxGeometry(L, seg.h, seg.t), wmat(seg.color), W((seg.a[0] + seg.b[0]) / 2, (seg.a[1] + seg.b[1]) / 2, z0 + seg.h / 2), ref(seg.owner));
       w.rotation.y = Math.atan2(-dz, dx);
+      for (const p of [seg.a, seg.b]) {
+        const k = `${seg.floor}|${Math.round(p[0] * 50)}|${Math.round(p[1] * 50)}`, o = posts.get(k);
+        if (!o || o.t < seg.t || o.h < seg.h) posts.set(k, { p, t: Math.max(seg.t, o?.t || 0), h: Math.max(seg.h, o?.h || 0), z0, color: seg.color, owner: seg.owner });
+      }
+    }
+    for (const o of posts.values()) {
+      // радиус чуть больше половины толщины: столбик закрывает щель в углу, его грани не совпадают с гранями стен
+      this.add('world', new THREE.CylinderGeometry(o.t * 0.56, o.t * 0.56, o.h, 8), wmat(o.color), W(o.p[0], o.p[1], o.z0 + o.h / 2), ref(o.owner));
     }
     for (const st of on('stairs') ? m.stairs.filter(this.vis) : []) {
       const z0 = this.z0(st), n = Math.max(3, Math.round((st.dir === 'x' ? st.w : st.h) / 0.5)), rise = (st.rise || 3) / n;
@@ -292,7 +341,7 @@ export class Scene3D {
     }
     for (let r = 0; r < R; r++) for (let i = 0; i < N; i++) { const a = r * N + i, b = r * N + ((i + 1) % N), c = (r + 1) * N + ((i + 1) % N), d = (r + 1) * N + i; idx.push(a, b, c, a, c, d); }
     const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); rg.setIndex(idx); rg.computeVertexNormals();
-    const roof = new THREE.Mesh(rg, this.mat('#fbfbf9', { roughness: 0.55, side: THREE.DoubleSide, transparent: true, opacity: 0.96 })); roof.castShadow = true; roof.receiveShadow = true; this.groups.roof.add(roof);
+    const roof = new THREE.Mesh(rg, this.mat('#fbfbf9', { roughness: 0.55, side: THREE.DoubleSide })); roof.castShadow = true; roof.receiveShadow = true; this.groups.roof.add(roof);
     this.ribbon('roof', 13, 35.4, 13, 34.2, this.mat('#ffffff', { emissive: '#ffffff', emissiveIntensity: 0.6 }));
     // треугольные мачты по кромке крыши и тросы
     const mastMat = this.mat('#ffffff', { roughness: 0.4 }), cables = [];
@@ -447,7 +496,7 @@ export class Scene3D {
     this.anim = null; this.controls.enabled = false;
     const yaw = Number.isFinite(opts.yaw) ? opts.yaw : face ? Math.atan2(face.y - y, face.x - x) : this.look?.yaw ?? 0;
     this.look = { pos: W(x, y, z), yaw, pitch: opts.pitch ?? -0.05, fov: Math.max(32, Math.min(90, opts.fov || 72)), plan: { x, y }, kind: opts.kind || 'pano' };
-    this.camera.near = NEAR_LOOK; this.camera.updateProjectionMatrix();
+    this.camera.near = NEAR_LOOK; this.camera.far = 3000; this.camera.updateProjectionMatrix();
     this.groups.panos.visible = false; this.groups.route.visible = false; this.groups.roof.visible = this.roof;
     this.applyLook(); this.syncQuest();
   }
@@ -655,6 +704,7 @@ export class Scene3D {
     if (a) this.dirty = true;
     if (!this.dirty) return;               // рисуем только когда что-то изменилось — бережём батарею
     this.dirty = false;
+    if (!this.look) this.fitDepth();
     const cam = this.camera.position;
     for (const s of this.culled) s.visible = cam.distanceTo(s.getWorldPosition(tmpV)) < (s.userData.maxDist || 1e9);
     this.renderer.render(this.scene, this.camera);

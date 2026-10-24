@@ -242,7 +242,8 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         <button class="btn blue full" data-act="lookPano">${icon('eye')}Посмотреть панораму</button>
         ${iconField(o, 'pano')}
         ${guideField(o)}
-        <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото. Поворот, вид при открытии и стрелки — в «Посмотреть панораму».' : 'Сейчас вид строится из 3D-модели. Загрузите готовую сферическую панораму 2:1 (JPEG, PNG, WebP, от 2000 px по ширине, до 15 МБ) — с камеры 360° или из приложения-склейки. Обычные фото сайт в панораму не склеивает.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
+        <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото. Поворот, вид при открытии и стрелки — в «Посмотреть панораму».' : 'Сейчас вид строится из 3D-модели. Снимите панораму камерой телефона (16 кадров, сайт склеит их сам) или загрузите готовую сферическую 2:1 (JPEG, PNG, WebP, от 2000 px, до 15 МБ).'}</span>${photoBlock(o.img, 'pano360', 'Загрузить файл 360°')}
+          ${state.readonly ? '' : `<button class="btn sm${o.img ? '' : ' primary'}" data-act="capturePano">${icon('pano')}${o.img ? 'Переснять камерой' : 'Снять камерой телефона'}</button>`}</div>
         ${field('Панорама Google Maps или видео YouTube', `<textarea class="inp" id="f-pembed" placeholder="Код &lt;iframe&gt; из Google Maps (Поделиться → Встраивание карты) или ссылка на видео YouTube — обычное или 360°" ${dis()}>${esc(o.embed || '')}</textarea>`)}
         ${o.embed && !mapsEmbed(o.embed) ? '<p class="cap">Не похоже на код Google Maps или ссылку YouTube — посетители увидят обычную панораму.</p>' : ''}
         <p class="cap" style="margin:0">Берите только материалы, которые можно показывать: свои съёмки или ролики, где автор разрешил встраивание.</p>
@@ -698,12 +699,29 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       try {
         const { w, h } = await checkPanoFile(f);
         if (!(await previewPano(f, { title: o.img ? `Новое фото для «${o.name}»` : `Фото 360° для «${o.name}»`, info: `${w} × ${h} · ${(f.size / 1048576).toFixed(1)} МБ · ведите, чтобы осмотреться` }))) return;
-        toast('Загружаю фото…', 8000);
-        const r = await api.upload(f, 'pano360'), had = !!o.img;
-        ed.change(() => { o.img = r.url; }, had ? 'Фото заменено — поворот, вид и стрелки сохранены' : 'Фото 360° добавлено');
+        await savePano(o, f);
       } catch (e) { toast(e.message, 6000); }
     };
     inp.click();
+  }
+  /** Загрузить готовую панораму и поставить её точке (поворот, вид и стрелки сохраняются). */
+  async function savePano(o, f) {
+    toast('Загружаю фото…', 8000);
+    const r = await api.upload(f, 'pano360'), had = !!o.img;
+    ed.change(() => { o.img = r.url; }, had ? 'Фото заменено — поворот, вид и стрелки сохранены' : 'Фото 360° добавлено');
+  }
+  /** Съёмка камерой: 16 кадров → склейка → предпросмотр → загрузка. Кадры хранятся в браузере до сохранения. */
+  async function capturePano(o) {
+    const { openCapture, dropSession } = await import('./capture.js');
+    const key = `${venue.slug}:${o.id}`;
+    for (;;) {
+      const f = await openCapture({ key, title: o.name });
+      if (!f) return;                                      // вышли — кадры остаются, съёмку можно продолжить
+      if (await previewPano(f, { title: `Склеенная панорама · ${o.name}`, info: 'Проверьте швы: если есть двоение — «Отмена», подберите угол обзора в настройках съёмки и соберите снова' })) {
+        try { await savePano(o, f); await dropSession(key); inspector(); } catch (e) { toast(e.message, 6000); }
+        return;
+      }
+    }
   }
 
   root.addEventListener('click', async (e) => {
@@ -770,6 +788,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'cylPano') upload((url) => (o.pano = url));
     if (a === 'cylPanoRm') ed.change(() => delete o.pano);
     if (a === 'pano360') uploadPano360(o);
+    if (a === 'capturePano' && o) capturePano(o);
     if (a === 'pano360Rm') { if (await confirmBox(`Убрать фото 360° у «${o.name}»? Вид снова будет строиться из 3D-модели.`, { ok: 'Убрать фото' })) ed.change(() => delete o.img, 'Фото убрано'); }
     if (a === 'addFloor') {
       const fs = floorsSorted(map), top = fs.at(-1), nf = { id: uid('f'), name: `${fs.length + 1} этаж`, elev: +((top.elev || 0) + 4).toFixed(2) };
