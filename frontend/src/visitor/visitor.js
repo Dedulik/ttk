@@ -1,7 +1,7 @@
 // Экран посетителя: карта во весь экран, поиск, шторка с карточкой места, маршрут и панорамы.
 import { Plan2D } from '../core/plan2d.js';
 import { Scene3D } from '../core/scene3d.js';
-import { CATS, PCATS, dist, kindOf, nearestPano, neighbors, placeOf, poiColor, route, search, shapeCenter } from '../core/model.js';
+import { CATS, PCATS, dist, embedKind, kindOf, mapsEmbed, nearestPano, neighbors, placeOf, poiColor, route, search, shapeCenter, shapePoints } from '../core/model.js';
 import { SECTORS, ST, STANDS, NUMS, neighbours, otherTier, ring, secMid, sector, setStadiumCenter } from '../core/stadium.js';
 import { $, Sheet, esc, icon, photo, toast } from '../core/ui.js';
 
@@ -12,8 +12,13 @@ const QUICK = [
 
 export async function mountVisitor(root, api) {
   const pub = await api.published();
-  const map = pub.data;
+  const map = pub.data, stadium = !!map.stadium;
+  const title = pub.venue?.name || map.name || 'Ростов Арена';
+  const quickList = QUICK.filter((q) => stadium || q.k !== 'stands');
+  // пришли со страницы выбора карт автора — показываем дорогу обратно
+  const qs = new URLSearchParams(location.search), byParam = qs.has('object') && qs.get('by');
   setStadiumCenter(map);
+  document.title = title + ' · Карта';
   root.innerHTML = `
   <div class="vis">
     <div class="stage">
@@ -21,8 +26,9 @@ export async function mountVisitor(root, api) {
       <svg class="plan" hidden aria-label="План территории"></svg>
       <div class="topbar">
         <label class="search">${icon('search')}<input id="q" type="search" placeholder="Сектор, вход, кафе…" autocomplete="off" enterkeyhint="search" aria-label="Поиск по карте"><button class="iconbtn flat" id="qx" hidden aria-label="Очистить">${icon('close')}</button></label>
-        <a class="iconbtn" href="#/admin" aria-label="Вход для сотрудников" title="Вход для сотрудников">${icon('user')}</a>
+        <a class="iconbtn admin-link" href="admin.html" aria-label="Админ-панель" title="Админ-панель для сотрудников">${icon('user')}<span>Админ-панель</span></a>
       </div>
+      <div class="pano-embed" hidden></div>
       <div class="results" id="res" hidden></div>
       <div class="fabs">
         <button class="iconbtn" data-act="view" aria-label="Переключить 2D и 3D"><span class="fab-txt" id="viewLbl">2D</span></button>
@@ -57,21 +63,24 @@ export async function mountVisitor(root, api) {
   function home() {
     S.sel = null; S.list = null; sync();
     const stands = ['A', 'B', 'C', 'D'].map((k) => `<button class="item stand-row" data-go="sec:${k}${NUMS.lower[k][0]}"><span class="bar" style="background:${map.style.stands[k] || STANDS[k].c}"></span><span class="t"><b>${STANDS[k].n}</b><span>${k}${NUMS.lower[k][0]}–${k}${NUMS.lower[k][1]} · ${k}${NUMS.upper[k][0]}–${k}${NUMS.upper[k][1]}</span></span>${icon('chevron', 'chev')}</button>`).join('');
+    const intro = stadium ? 'Стадион, Арена Экспо и вся территория' : pub.venue?.description || 'Карта объекта';
     sheet.set(`
-      <div class="home-head"><h1>Ростов Арена</h1><p>Стадион, Арена Экспо и вся территория · версия карты ${pub.number}${api.demo ? ' · демо' : ''}</p></div>
-      <div class="quick">${QUICK.map((q) => `<button data-quick="${q.k}"><span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : q.k === 'panos' ? 'var(--pano)' : 'var(--ink)')}">${q.g}</span>${q.n}</button>`).join('')}</div>
-      <div class="photos">
+      <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · версия карты ${pub.number}${api.demo ? ' · демо' : ''}</p>
+        ${byParam ? `<a class="txt-btn" href="?by=${encodeURIComponent(byParam)}" style="align-self:flex-start">← Все карты автора</a>` : ''}</div>
+      <div class="quick">${quickList.map((q) => `<button data-quick="${q.k}"><span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : q.k === 'panos' ? 'var(--pano)' : 'var(--ink)')}">${q.g}</span>${q.n}</button>`).join('')}</div>
+      ${stadium ? `<div class="photos">
         ${[['aerial', 'Стадион и территория с высоты'], ['facade', 'Фасад и парадная лестница'], ['bowl', 'Чаша: 4 трибуны, 2 яруса'], ['seats', 'Сектора и ряды']].map(([f, c]) => `<figure><img src="${photo(f)}" alt="${c}" loading="lazy"><figcaption>${c}</figcaption></figure>`).join('')}
       </div>
-      <h3 class="h-sec">Трибуны</h3><div class="list">${stands}</div>
-      <h3 class="h-sec">Важное рядом</h3><div class="list">${map.pois.slice(0, 6).map(itemPoi).join('')}</div>`, sheet.state === 'full' ? 'half' : undefined);
+      <h3 class="h-sec">Трибуны</h3><div class="list">${stands}</div>` : ''}
+      ${map.pois.length ? `<h3 class="h-sec">Важное рядом</h3><div class="list">${map.pois.slice(0, 6).map(itemPoi).join('')}</div>` : ''}
+      <a class="staff-link" href="admin.html">${icon('user')}<span><b>Для сотрудников</b><span>Админ-панель: конструктор карт, команда, безопасность</span></span>${icon('chevron', 'chev')}</a>`, sheet.state === 'full' ? 'half' : undefined);
   }
   function itemPoi(p) { return `<button class="item" data-go="${p.id}"><span class="glyph" style="background:${poiColor(map, p)}">${esc((PCATS[p.cat] || PCATS.info).g)}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || (PCATS[p.cat] || PCATS.info).n)}</span></span>${icon('chevron', 'chev')}</button>`; }
   function itemShape(s) { return `<button class="item" data-go="${s.id}"><span class="glyph sm" style="background:${s.color || map.style.cats[s.cat] || CATS[s.cat]?.c}"></span><span class="t"><b>${esc(s.name)}</b><span>${esc(s.desc || CATS[s.cat]?.n || '')}</span></span>${icon('chevron', 'chev')}</button>`; }
 
   function quick(k) {
     S.list = k; let title, html;
-    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}"><span class="glyph" style="background:var(--pano)">${icon('pano')}</span><span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D-модели'} · ${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
+    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}"><span class="glyph" style="background:var(--pano)">${icon('pano')}</span><span class="t"><b>${esc(p.name)}</b><span>${panoSub(p).replace(/^./, (c) => c.toLowerCase())} ·${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'stands') { title = 'Сектора'; html = SECTORS.map((s) => `<button class="item" data-go="sec:${s.id}"><span class="glyph sm mono" style="background:${map.sectors[s.id]?.color || map.style.stands[s.stand] || STANDS[s.stand].c}">${s.stand}</span><span class="t"><b>Сектор ${s.id}</b><span>${STANDS[s.stand].n} · ${s.tier === 'lower' ? 'нижний' : 'верхний'} ярус</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'parking') { title = 'Парковки'; html = map.shapes.filter((s) => s.cat === 'parking').map(itemShape).join(''); }
     else {
@@ -86,6 +95,7 @@ export async function mountVisitor(root, api) {
 
   function placePhoto(pl) {
     if (pl.photo) return pl.photo;
+    if (!stadium) return null;
     if (pl.type === 'sector') return photo(pl.obj.tier === 'lower' ? 'bowl' : 'seats');
     if (pl.type === 'stadium') return photo('aerial');
     if (pl.type === 'shape' && pl.obj.cat === 'entrance' && /Вход \d/.test(pl.name)) return photo('facade');
@@ -123,12 +133,16 @@ export async function mountVisitor(root, api) {
   function originOptions() {
     const o = [];
     for (const s of map.shapes) if (s.cat === 'entrance' || s.cat === 'parking') o.push([s.id, s.name]);
+    for (const p of map.pois) if (p.cat === 'gate' || p.cat === 'transport' || p.cat === 'meet') o.push([p.id, p.name]);
     for (const p of map.panos) o.push([p.id, 'У точки «' + p.name + '»']);
-    return o;
+    // в объекте без входов и точек обзора — от любой метки или помещения
+    if (!o.length) for (const x of [...map.pois, ...map.shapes.filter((s) => s.cat !== 'plaza')]) o.push([x.id, x.name]);
+    return o.filter(([v]) => v !== S.sel);
   }
   function routeSheet() {
     const to = placeOf(map, S.sel); if (!to) return;
-    S.routeFrom ||= map.shapes.find((s) => s.id === 'gS')?.id || map.panos[0]?.id;
+    if (S.routeFrom === S.sel) S.routeFrom = null;
+    S.routeFrom ||= map.shapes.find((s) => s.id === 'gS')?.id || originOptions()[0]?.[0];
     const from = placeOf(map, S.routeFrom), r = from && route(map, from, to);
     S.route = r; scene.setRoute(r); plan.set({ route: r });
     sheet.set(`
@@ -136,10 +150,10 @@ export async function mountVisitor(root, api) {
       <div class="route-box">
         <div class="route-pts"><i class="a"></i><select class="inp" id="rFrom" aria-label="Откуда">${originOptions().map(([v, n]) => `<option value="${v}" ${v === S.routeFrom ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
           <i class="b"></i><div class="inp" style="display:flex;align-items:center">${esc(to.name)}</div></div>
-        ${r ? `<div class="route-sum"><b>${Math.round(r.len)} м</b><span class="cap">~${r.minutes} мин пешком · ${r.nodes.length} точек обзора по пути</span></div>
-          <button class="btn primary full" data-act="walk">${icon('pano')}Пройти маршрут в панорамах</button>
-          <ol class="steps">${r.nodes.map((n) => `<li><i></i>${esc(n.name)}</li>`).join('')}<li><i style="background:var(--accent)"></i>${esc(to.name)}</li></ol>`
-          : '<p class="cap">Между этими точками пока нет проложенных переходов. Администратор может связать точки обзора в редакторе.</p>'}
+        ${r ? `<div class="route-sum"><b>${Math.round(r.len)} м</b><span class="cap">~${r.minutes} мин пешком${r.nodes.length ? ` · ${r.nodes.length} точек обзора по пути` : ' · в обход стен, через проёмы'}</span></div>
+          ${r.nodes.length ? `<button class="btn primary full" data-act="walk">${icon('pano')}Пройти маршрут в панорамах</button>` : ''}
+          <ol class="steps"><li><i></i>${esc(from.name)}</li>${r.nodes.filter((n, i) => i || n.name !== from.name).map((n) => `<li><i></i>${esc(n.name)}</li>`).join('')}<li><i style="background:var(--accent)"></i>${esc(to.name)}</li></ol>`
+          : '<p class="cap">Сюда не дойти: место окружено стенами без проёмов. Администратор может добавить дверь инструментом «Дверь».</p>'}
       </div>`, 'half');
     if (r) { if (S.view === '2d') plan.fitBox(...bboxOf(r.pts)); else { const [x, y, w, h] = bboxOf(r.pts); scene.focus(x + w / 2, y + h / 2, Math.max(120, Math.max(w, h) * 1.1)); } }
   }
@@ -177,7 +191,7 @@ export async function mountVisitor(root, api) {
     const hint = $('#lkHint'); hint.style.opacity = 1; clearTimeout(enterLookUI.t); enterLookUI.t = setTimeout(() => (hint.style.opacity = 0), 3500);
   }
   function exitLook() {
-    if (!S.look) return; const wasPlan = S.look.plan; S.look = null;
+    if (!S.look) return; const wasPlan = S.look.plan; S.look = null; setEmbed(null);
     $('.look-ui', root).hidden = true; $('.sheet', root).hidden = false; $('.topbar', root).hidden = false; $('.fabs', root).hidden = false;
     scene.exitLook(true); scene.focus(wasPlan.x, wasPlan.y, 70);
   }
@@ -186,22 +200,32 @@ export async function mountVisitor(root, api) {
     if (S.route) { const i = S.route.nodes.findIndex((n) => n.id === p.id), nx = S.route.nodes[i + 1]; if (i >= 0 && nx) nb.unshift(`<button class="chip next" data-glide="${nx.id}">Дальше по маршруту</button>`); if (i === S.route.nodes.length - 1) nb.unshift(`<span class="chip next">Вы почти у цели</span>`); }
     return nb.join('');
   }
+  function panoSub(p) { return mapsEmbed(p.embed) ? embedKind(p.embed) : p.img ? 'Фото 360°' : 'Вид из 3D-модели'; }
+  // панорама Google Maps встраивается поверх 3D, переходы и мини-карта остаются сверху
+  function setEmbed(p) {
+    const box = $('.pano-embed', root), src = p && mapsEmbed(p.embed);
+    box.hidden = !src; $('#mini').hidden = !!src; $('#lkHint').hidden = !!src;
+    if (!src) { box.innerHTML = ''; return; }
+    if (box.dataset.src !== src) box.innerHTML = `<iframe src="${esc(src)}" title="${esc(p.name)}" allow="accelerometer; gyroscope; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+    box.dataset.src = src;
+  }
   function openPano(id, face) {
     const p = map.panos.find((x) => x.id === id); if (!p) return;
     const nb = neighbors(map, id);
     S.look = { type: 'pano', id, plan: { x: p.x, y: p.y } };
-    scene.enterLook(p.x, p.y, (p.z || 0) + 1.6, face || (Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? { x: ST.cx, y: ST.cy } : nb[0]) || { x: ST.cx, y: ST.cy });
+    const center = stadium ? { x: ST.cx, y: ST.cy } : null;
+    scene.enterLook(p.x, p.y, (p.z || 0) + 1.6, face || (center && Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? center : nb[0]) || center || { x: p.x + 1, y: p.y });
     scene.setPhoto(p.img || null); scene.setArrows(nb);
-    enterLookUI(p.name, p.img ? 'Фото 360°' : 'Вид из 3D-модели', panoChips(p)); buildMini();
+    enterLookUI(p.name, panoSub(p), panoChips(p)); buildMini(); setEmbed(p);
   }
   function glide(id) {
     if (!S.look || S.look.type !== 'pano' || scene.anim) return;
     const q = map.panos.find((x) => x.id === id); if (!q) return;
-    scene.setArrows([]); $('#lkChips').innerHTML = '';
+    scene.setArrows([]); $('#lkChips').innerHTML = ''; setEmbed(null);
     scene.glideTo(q.x, q.y, (q.z || 0) + 1.6, () => {
       S.look = { type: 'pano', id, plan: { x: q.x, y: q.y } };
       scene.setPhoto(q.img || null); scene.setArrows(neighbors(map, id));
-      $('#lkName').textContent = q.name; $('#lkSub').textContent = q.img ? 'Фото 360°' : 'Вид из 3D-модели'; $('#lkChips').innerHTML = panoChips(q);
+      $('#lkName').textContent = q.name; $('#lkSub').textContent = panoSub(q); $('#lkChips').innerHTML = panoChips(q); setEmbed(q);
     });
   }
   function stepToward(pt) {
@@ -225,7 +249,7 @@ export async function mountVisitor(root, api) {
   function buildMini() {
     const site = map.shapes.find((s) => s.cat === 'plaza');
     const P = (a) => a.map((q) => q.join(',')).join(' ');
-    let h = `<svg viewBox="0 0 200 200" aria-hidden="true"><g id="mm">${site ? `<polygon points="${P(site.pts)}" fill="#3a3c41"/>` : ''}<polygon points="${P(ring(74))}" fill="#5a5d63"/><rect x="${ST.cx - 34}" y="${ST.cy - 52.5}" width="68" height="105" fill="#3f8f46"/>`;
+    let h = `<svg viewBox="0 0 200 200" aria-hidden="true"><g id="mm">${site ? `<polygon points="${P(shapePoints(site))}" fill="#3a3c41"/>` : ''}${stadium ? `<polygon points="${P(ring(74))}" fill="#5a5d63"/><rect x="${ST.cx - 34}" y="${ST.cy - 52.5}" width="68" height="105" fill="#3f8f46"/>` : ''}`;
     for (const s of map.shapes) if (kindOf(s).walls && s.type === 'rect') h += `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" fill="#7b7e84"/>`;
     for (const [i, j] of map.links) { const a = map.panos.find((p) => p.id === i), b = map.panos.find((p) => p.id === j); if (a && b) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5b92ff" stroke-width="3"/>`; }
     for (const p of map.panos) h += `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#5b92ff"/>`;
@@ -235,7 +259,7 @@ export async function mountVisitor(root, api) {
   function drawMiniCone(L) {
     if (!L || !S.look) return;
     const mm = $('#mm'), cone = $('#cone'); if (!mm) return;
-    const x = L.pos.x + 400, y = L.pos.z + 262, k = 0.55;
+    const { x, y } = scene.planOf(L.pos), k = 0.55;
     mm.setAttribute('transform', `translate(100 100) scale(${k}) translate(${-x} ${-y})`);
     cone.setAttribute('transform', `translate(100 100) rotate(${(L.yaw * 180) / Math.PI})`);
   }

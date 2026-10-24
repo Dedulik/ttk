@@ -1,0 +1,37 @@
+// Точка входа админ-панели (admin.html):
+//   #/            — объекты: список и создание нового с пустого плана
+//   #/account     — личный кабинет
+//   #/team        — команда и администраторы (только администратор)
+//   #/security    — защита базы, резервные копии, журнал (только администратор)
+//   #/edit/<slug> — конструктор карты объекта
+import { createApi } from './core/api.js';
+
+let root = document.getElementById('app');
+const api = await createApi();
+const editing = () => /^#\/edit\//.test(location.hash);
+
+async function mount() {
+  window.__ac?.abort(); window.__ac = new AbortController();   // снимаем обработчики прошлого экрана
+  const fresh = root.cloneNode(false); fresh.className = 'boot'; root.replaceWith(fresh); root = fresh;
+  try {
+    const user = await api.me().catch(() => null);
+    const { loginScreen, cabinet } = await import('./admin/cabinet.js');
+    if (!user) loginScreen(root, api);
+    else if (editing()) {
+      const { editor } = await import('./admin/admin.js');
+      api.use(decodeURIComponent(location.hash.slice(7).split(/[?#/]/)[0]));
+      editor(root, api, user, await api.draft());
+    } else await cabinet(root, api, user, location.hash.replace(/^#\/?/, '') || 'objects');
+    root.classList.remove('boot');
+  } catch (e) {
+    console.error(e);
+    root.className = 'fatal';
+    root.innerHTML = `<p>Не удалось открыть админ-панель: ${String(e.message || e).replace(/</g, '&lt;')}</p><a class="btn" href="#/">К объектам</a>`;
+  }
+}
+
+// Разделы кабинета перерисовываются на месте; вход и выход из конструктора перезагружают страницу — так чисто освобождается WebGL.
+window.__remount = mount;
+let wasEditing = editing();
+window.addEventListener('hashchange', () => { if (wasEditing || editing()) location.reload(); else mount(); wasEditing = editing(); });
+mount();

@@ -1,4 +1,5 @@
 // Модель карты: справочники, геометрия фигур, стены с дверными проёмами, маршруты и поиск.
+import { walkPath } from './nav.js';
 import { SECTORS, STANDS, secMid } from './stadium.js';
 
 export const KINDS = {
@@ -49,9 +50,23 @@ export function normalize(m) {
   for (const k of ['shapes', 'walls', 'doors', 'stairs', 'pois', 'panos', 'links']) if (!Array.isArray(map[k])) map[k] = [];
   map.sectors = map.sectors || {};
   map.style = Object.assign({ cats: {}, stands: {}, poi: {}, realSeats: true }, map.style || {});
-  map.stadium = map.stadium || { cx: 333.5, cy: 248.5 };
+  // stadium: null — объект без чаши стадиона (собран в конструкторе с пустого плана)
+  if (map.stadium !== null) map.stadium = map.stadium || { cx: 333.5, cy: 248.5 };
   map.version = 2;
   return map;
+}
+
+/** Рамка всего, что есть на карте: для «показать всё» в 2D и центра 3D-сцены. */
+export function mapBox(map) {
+  if (map.stadium) return { x: 20, y: 4, w: 760, h: 516 };
+  const xs = [], ys = [];
+  const add = (x, y) => { xs.push(x); ys.push(y); };
+  for (const s of map.shapes) { const b = shapeBox(s); add(b.x, b.y); add(b.x + b.w, b.y + b.h); }
+  for (const w of map.walls) for (const [x, y] of w.pts) add(x, y);
+  for (const p of [...map.pois, ...map.panos, ...map.stairs, ...map.doors]) add(p.x, p.y);
+  if (!xs.length) { const b = map.bounds || { w: 200, h: 150 }; return { x: 0, y: 0, w: b.w, h: b.h }; }
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, w: Math.max(20, Math.max(...xs) - x), h: Math.max(20, Math.max(...ys) - y) };
 }
 
 // ---------- фигуры ----------
@@ -141,9 +156,44 @@ export function nearestPano(map, pt, filter = () => true) {
 export function neighbors(map, id) {
   return map.links.filter((l) => l.includes(id)).map((l) => map.panos.find((p) => p.id === (l[0] === id ? l[1] : l[0]))).filter(Boolean);
 }
+/**
+ * Встраиваемый вид для точки обзора: панорама Google Maps или видео YouTube (обычное или 360°).
+ * Принимает код <iframe> или ссылку; возвращает адрес для iframe или null.
+ */
+export function mapsEmbed(text) {
+  const s = String(text || '');
+  const maps = s.match(/https:\/\/www\.google\.[a-z.]+\/maps\/embed\?[^"'\s<>]+/)?.[0];
+  if (maps) return maps.replace(/&amp;/g, '&');
+  const yt = s.match(/(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^"'\s<>]*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/)?.[1];
+  return yt ? `https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1` : null;
+}
+export const embedKind = (text) => (/youtube/.test(mapsEmbed(text) || '') ? 'Видео YouTube' : 'Панорама Google Maps');
+/**
+ * Маршрут от места до места. Если есть граф точек обзора — идём по нему (его можно пройти в панорамах),
+ * а подходы к первой и от последней точки строим в обход стен. Нет графа — пешеходный путь по сетке.
+ */
 export function route(map, from, to) {
-  const a = nearestPano(map, from), b = nearestPano(map, to);
+  const r = panoRoute(map, from, to);
+  if (r) return r;
+  const pts = walkPath(map, from, to);
+  return pts ? finish(pts.map(([x, y]) => [x, y, 0]), []) : null;
+}
+function finish(pts, nodes) {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return { pts, len, nodes, minutes: Math.max(1, Math.round(len / 1.2 / 60)) };
+}
+function leg(map, a, b) {
+  const p = walkPath(map, a, b) || [[a.x, a.y], [b.x, b.y]];
+  return p.map(([x, y], i) => [x, y, i === p.length - 1 ? b.z || 0 : a.z || 0]);
+}
+function panoRoute(map, from, to) {
+  // точки без переходов (например, отдельная панорама на поле) в маршрут не попадают
+  const linked = (p) => map.links.some((l) => l.includes(p.id));
+  const a = nearestPano(map, from, linked), b = nearestPano(map, to, linked);
   if (!a || !b) return null;
+  // если цель ближе, чем точки обзора, панорамы не нужны
+  if (a.id === b.id && dist(from, to) < dist(from, a) + dist(a, to) * 0.5) return null;
   const D = new Map(map.panos.map((p) => [p.id, Infinity])), prev = new Map(), left = new Set(map.panos.map((p) => p.id));
   D.set(a.id, 0);
   while (left.size) {
@@ -153,23 +203,23 @@ export function route(map, from, to) {
     left.delete(u);
     if (u === b.id) break;
     const pu = map.panos.find((p) => p.id === u);
-    for (const q of neighbors(map, u)) { const nd = D.get(u) + dist(pu, q); if (nd < D.get(q.id)) { D.set(q.id, nd); prev.set(q.id, u); } }
+    // подъём на другой уровень (галерея, лестница) «стоит» 6 м пути за метр высоты — по земле удобнее
+    for (const q of neighbors(map, u)) { const nd = D.get(u) + dist(pu, q) + 6 * Math.abs((q.z || 0) - (pu.z || 0)); if (nd < D.get(q.id)) { D.set(q.id, nd); prev.set(q.id, u); } }
   }
   if (D.get(b.id) === Infinity) return null;
   const chain = [b.id];
   while (chain[0] !== a.id) chain.unshift(prev.get(chain[0]));
   const nodes = chain.map((id) => map.panos.find((p) => p.id === id));
-  const pts = [[from.x, from.y, from.z || 0], ...nodes.map((p) => [p.x, p.y, p.z || 0]), [to.x, to.y, to.z || 0]];
-  let len = 0;
-  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-  return { pts, len, nodes, minutes: Math.max(1, Math.round(len / 1.2 / 60)) };
+  const first = nodes[0], last = nodes.at(-1);
+  const pts = [...leg(map, from, first), ...nodes.slice(1, -1).map((p) => [p.x, p.y, p.z || 0]), ...(nodes.length > 1 ? leg(map, last, to) : leg(map, first, to).slice(1))];
+  return finish(pts, nodes);
 }
 
 // ---------- места ----------
 /** Единый список того, что можно найти и выбрать: сектора, метки, объекты. */
 export function placeOf(map, ref) {
   if (!ref) return null;
-  if (ref.startsWith('sec:')) {
+  if (ref.startsWith('sec:') && map.stadium) {
     const s = SECTORS.find((x) => x.id === ref.slice(4));
     if (!s) return null;
     const m = secMid(s);
@@ -181,7 +231,7 @@ export function placeOf(map, ref) {
   if (s) { const c = shapeCenter(s); return { ref, type: 'shape', id: s.id, name: s.name, sub: (CATS[s.cat] || CATS.building).n, x: c.x, y: c.y, obj: s, color: shapeColor(map, s), text: s.desc, photo: s.photo }; }
   const pn = map.panos.find((x) => x.id === ref);
   if (pn) return { ref, type: 'pano', id: pn.id, name: pn.name, sub: 'Точка обзора 360°', x: pn.x, y: pn.y, z: pn.z || 0, obj: pn, color: '#2f6fe0', text: '' };
-  if (ref === 'stadium') return { ref, type: 'stadium', id: 'stadium', name: 'Стадион «Ростов Арена»', sub: 'Поле 105 × 68 м · 4 трибуны · 2 яруса', x: map.stadium.cx, y: map.stadium.cy };
+  if (ref === 'stadium' && map.stadium) return { ref, type: 'stadium', id: 'stadium', name: 'Стадион «Ростов Арена»', sub: 'Поле 105 × 68 м · 4 трибуны · 2 яруса', x: map.stadium.cx, y: map.stadium.cy };
   return null;
 }
 
@@ -190,7 +240,7 @@ export function search(map, q, limit = 12) {
   if (!q) return [];
   const out = [];
   const secQ = q.replace(/^сектор\s*/, '').toUpperCase();
-  for (const s of SECTORS) if (s.id.startsWith(secQ) || s.id.replace(/^./, (c) => ({ A: 'А', B: 'В', C: 'С', D: 'Д' })[c] || c).startsWith(secQ)) out.push('sec:' + s.id);
+  if (map.stadium) for (const s of SECTORS) if (s.id.startsWith(secQ) || s.id.replace(/^./, (c) => ({ A: 'А', B: 'В', C: 'С', D: 'Д' })[c] || c).startsWith(secQ)) out.push('sec:' + s.id);
   for (const p of map.pois) if ((p.name + ' ' + (PCATS[p.cat]?.n || '')).toLowerCase().includes(q)) out.push(p.id);
   for (const s of map.shapes) if (s.cat !== 'plaza' && (s.name + ' ' + (CATS[s.cat]?.n || '')).toLowerCase().includes(q)) out.push(s.id);
   return out.slice(0, limit).map((r) => placeOf(map, r));
