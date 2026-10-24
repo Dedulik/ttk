@@ -309,10 +309,11 @@ export async function mountVisitor(root, api) {
   function routeNext(id) { const ns = S.route?.nodes || [], i = ns.findIndex((n) => n.id === id); return i >= 0 ? ns[i + 1] || null : null; }
   /** Стрелки точки: у следующей по маршруту — пометка next (она ярче, остальные приглушены). */
   function arrowsFor(p) { const nx = routeNext(p.id); return arrowItems(p, neighbors(map, p.id)).map((q) => (nx && q.id === nx.id ? { ...q, next: true } : q)); }
-  function openPano(id, face) {
+  /** Открыть точку обзора. internal — вызов из самого перехода (он уже держит S.busy). */
+  function openPano(id, face, internal) {
     const p = map.panos.find((x) => x.id === id);
     if (!p) return toast('Этой точки обзора больше нет на карте');
-    if (S.busy) return;
+    if (S.busy && !internal) return;
     const nb = neighbors(map, id), tok = ++S.tok;
     S.look = { type: 'pano', id, plan: { x: p.x, y: p.y } };
     const center = stadium ? { x: ST.cx, y: ST.cy } : null;
@@ -346,19 +347,20 @@ export async function mountVisitor(root, api) {
       await tv.done;
       if (tok !== S.tok || !S.look) { tv.close(); return; }
       await tex;
-      S.busy = false;
       // смотрим дальше по ходу движения — как в конце видео
       const nx = routeNext(id);
-      openPano(id, nx ? { x: nx.x, y: nx.y } : { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) });
-      setTimeout(tv.close, 120);
+      await openPano(id, nx ? { x: nx.x, y: nx.y } : { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) }, true);
+      tv.close(); S.busy = false;
       return;
     }
     // переход «ладошкой»: ладонь закрывает кадр, под ней открывается следующая точка, ладонь уходит.
     // Смотрим по ходу маршрута (если он есть), иначе — дальше в направлении движения.
     scene.setArrows([]); $('#lkChips').innerHTML = ''; setEmbed(null);
     const nx = routeNext(id), face = nx ? { x: nx.x, y: nx.y } : { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) };
-    await palmWipe(root.querySelector('.stage'), () => { S.busy = false; return tok === S.tok && S.look ? openPano(id, face) : null; });
-    S.busy = false;
+    // S.busy держим до конца анимации: раньше его снимали в момент смены панорамы, и повторное нажатие запускало
+    // второй переход на том же видео, пока первый ещё шёл, — рывки, «залипшая» ладонь, не та панорама
+    try { await palmWipe(root.querySelector('.stage'), () => (tok === S.tok && S.look ? openPano(id, face, true) : null)); }
+    finally { S.busy = false; }
   }
 
   // ---------- звук, полный экран, снимок, ссылка ----------
@@ -453,7 +455,12 @@ export async function mountVisitor(root, api) {
   function stepToward(pt) {
     const p = map.panos.find((x) => x.id === S.look.id), a = Math.atan2(pt.y - p.y, pt.x - p.x);
     let best = null, bd = 0.8;
-    for (const q of neighbors(map, p.id)) { let d = Math.abs(Math.atan2(q.y - p.y, q.x - p.x) - a); if (d > Math.PI) d = 2 * Math.PI - d; if (d < bd) { bd = d; best = q; } }
+    // направление — как у стрелки на полу: если стрелку поставили вручную по фото, берём её угол, а не план
+    for (const q of arrowItems(p, neighbors(map, p.id))) {
+      const qa = Number.isFinite(q.yaw) ? q.yaw : Math.atan2(q.y - p.y, q.x - p.x);
+      let d = Math.abs(qa - a) % (2 * Math.PI); if (d > Math.PI) d = 2 * Math.PI - d;
+      if (d < bd) { bd = d; best = q; }
+    }
     if (best) glide(best.id); else toast('В эту сторону переходов нет');
   }
   function seatView(id) {

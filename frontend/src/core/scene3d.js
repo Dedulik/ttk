@@ -59,6 +59,15 @@ export class Scene3D {
     this.dirty = true;
     r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = 1.05;
     el.append(r.domElement);
+    // браузер может отобрать WebGL-контекст (нехватка видеопамяти, сворачивание вкладки на телефоне);
+    // без обработки сцена навсегда замирает. preventDefault разрешает восстановление, после него пересобираем сцену.
+    r.domElement.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.lost = true; });
+    r.domElement.addEventListener('webglcontextrestored', () => {
+      this.lost = false; this.texCache?.clear();
+      if (this.map) this.setMap(this.map);
+      if (this.look && this.lastPhoto) this.setPhoto(this.lastPhoto.url, this.lastPhoto.rot);
+      this.dirty = true;
+    });
     this.scene = new THREE.Scene();
     // ближняя плоскость 1,5 м в обзоре (точнее буфер глубины, нет мерцания), 0,2 м — во взгляде из точки
     this.camera = new THREE.PerspectiveCamera(45, 1, NEAR_ORBIT, 5000);
@@ -194,7 +203,7 @@ export class Scene3D {
     this.z0 = (o) => elevOf(map, o);
     this.vis = (o) => this.z0(o) <= top + 0.01;
     this.buildGround(); this.buildShapes(); if (map.stadium && on('stadium') && this.vis({ floor: ground })) this.buildStadium(); if (on('pois')) this.buildPois(); if (on('panos')) this.buildPanos();
-    this.buildQuest();
+    this.buildQuest(); this.syncMarkers();
     if (this.route) this.setRoute(this.route);
     this.groups.roof.visible = this.roof; this.dirty = true;
   }
@@ -387,6 +396,17 @@ export class Scene3D {
   }
 
   // метки: булавка со значком ТТК на белом круге; названия на карте не пишем — они всплывают при наведении
+  /**
+   * Высота, на которую ставить маркер в точке плана: верх стойки, сцены или макета, если маркер стоит на них,
+   * иначе пол своего этажа. Крыши и стены выше 6 м над полом не считаем — иначе маркер «повиснет» над зданием.
+   */
+  anchorY(x, y, floorY) {
+    this.scene.updateMatrixWorld();
+    const ray = (this._anchorRay ||= new THREE.Raycaster()), from = W(x, y, floorY + 6);
+    ray.set(from, new THREE.Vector3(0, -1, 0)); ray.far = 6.2;
+    const hit = ray.intersectObjects([this.groups.world, this.groups.stadium], true).find((h) => !h.object.userData.roofOf && h.object.visible !== false);
+    return Math.max(floorY, hit ? hit.point.y : floorY);
+  }
   buildPois() {
     for (const p of this.map.pois.filter((q) => q.cat !== 'quest' && this.vis(q))) {
       const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g, img = pointIconImage(p, p.cat, () => this.map && this.setMap(this.map)), red = css('--accent') || '#e30613';
@@ -396,8 +416,11 @@ export class Scene3D {
         x.fillStyle = img ? '#fff' : c; x.strokeStyle = img ? red : '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 16, 13.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, w / 2 - 9.5, 6.5, 19, 19);
         else { x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 10 : 13}px "PT Sans", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 16.5); }
-      }, 34, 46, 33, { cy: 0, order: 20 });
-      pin.position.copy(W(p.x, p.y, pz + 0.3)); pin.userData.ref = p.id; pin.userData.tip = p.name; this.groups.pois.add(pin);
+      }, 34, 46, 33, { cy: 0, order: 260, depthTest: false });
+      // Раньше: 0,3 м над полом и проверка глубины — внутри стойки, сцены или комнаты с крышей маркер пропадал.
+      // Теперь: остриё на верхней грани того, что стоит в этой точке, и маркер рисуется поверх модели и фото 360°
+      // (renderOrder 260 > сфера 50 и стрелки 200–202); ближние маркеры перекрывают дальние (сортировка по глубине).
+      pin.position.copy(W(p.x, p.y, this.anchorY(p.x, p.y, pz) + 0.05)); pin.userData.ref = p.id; pin.userData.tip = p.name; this.groups.pois.add(pin);
     }
   }
   // «Пиксельная охота»: пиксели ТТК видны только в панорамах, в радиусе 35 м (в конструкторе — всегда)
@@ -418,6 +441,12 @@ export class Scene3D {
     this.syncQuest();
   }
   setQuestFound(ids) { this.questFound = new Set(ids); if (this.map) { clear(this.groups.quest); this.buildQuest(); } this.dirty = true; }
+  /** Маркеры мест в режиме панорамы: только в радиусе 60 м от точки обзора; в обзоре карты — все. */
+  syncMarkers() {
+    const L = this.look;
+    for (const s of this.groups.pois.children) s.visible = !L || s.position.distanceTo(L.pos) < 60;
+    this.dirty = true;
+  }
   syncQuest() {
     const L = this.look;
     this.groups.quest.visible = !!L || !!this.questAlways;
@@ -442,9 +471,9 @@ export class Scene3D {
       const s = this.canvasSprite((x, w, h) => {
         x.fillStyle = '#fff'; x.strokeStyle = red; x.lineWidth = 2; x.beginPath(); x.arc(w / 2, h / 2, w / 2 - 1.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, 3.5, 3.5, w - 7, h - 7);
-      }, 26, 26, 19, { order: 15 });
+      }, 26, 26, 19, { order: 250, depthTest: false });
       s.userData.tip = p.name;
-      s.position.copy(W(p.x, p.y, this.z0(p) + (p.z || 0) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
+      s.position.copy(W(p.x, p.y, this.anchorY(p.x, p.y, this.z0(p) + (p.z || 0)) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
     }
   }
 
@@ -498,13 +527,13 @@ export class Scene3D {
     this.look = { pos: W(x, y, z), yaw, pitch: opts.pitch ?? -0.05, fov: Math.max(32, Math.min(90, opts.fov || 72)), plan: { x, y }, kind: opts.kind || 'pano' };
     this.camera.near = NEAR_LOOK; this.camera.far = 3000; this.camera.updateProjectionMatrix();
     this.groups.panos.visible = false; this.groups.route.visible = false; this.groups.roof.visible = this.roof;
-    this.applyLook(); this.syncQuest();
+    this.applyLook(); this.syncQuest(); this.syncMarkers();
   }
   exitLook(silent) {
     if (!this.look) return;
     const { plan } = this.look; this.look = null; this.anim = null; this.gliding = false; this.setPhoto(null); clear(this.groups.arrows);
     this.controls.enabled = true; this.groups.panos.visible = true; this.groups.route.visible = true; this.groups.roof.visible = this.roof;
-    this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true; this.syncQuest();
+    this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true; this.syncQuest(); this.syncMarkers();
     if (!silent) { const t = W(plan.x, plan.y); this.camera.position.copy(t.clone().add(new THREE.Vector3(-40, 60, 60))); this.controls.target.copy(t); this.focus(plan.x, plan.y, 60); }
   }
   applyLook() {
@@ -531,21 +560,42 @@ export class Scene3D {
       this.sphere = this.makeSphere(nextTex, next.rot, to); this.sphere.material.opacity = 0;
       if (!old) this.setWorldVisible(true);   // из вида-3D в фото — модель видна, пока фото проявляется
     } else this.setWorldVisible(true);
-    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, both, done: () => { L.plan = { x, y }; this.gliding = false; if (this.sphere) this.setWorldVisible(false); this.syncQuest(); done?.(); } };
+    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, both, done: () => { L.plan = { x, y }; this.gliding = false; if (this.sphere) this.setWorldVisible(false); this.syncQuest(); this.syncMarkers(); done?.(); } };
   }
   setWorldVisible(on) { for (const k of ['world', 'stadium', 'labels']) this.groups[k].visible = on; this.groups.roof.visible = on && this.roof; this.dirty = true; }
 
   // ---------- фото 360°: загрузка с кэшем и сфера вокруг камеры ----------
+  /**
+   * Фото 360° 4096×2048 — 32 МБ видеопамяти каждое. Раньше: кэш на 10 фото с mipmap-уровнями (~450 МБ — на телефоне
+   * WebGL терял контекст), а вытесненное фото сразу удалялось — даже то, что сейчас на сфере (чёрный кадр).
+   * Теперь: без mipmap (панораме они не нужны), фото сразу передаётся в видеокарту (без подвисания при первом показе),
+   * в кэше 4 фото на телефоне и 8 на компьютере, а показываемые сейчас и только что запрошенные не вытесняются.
+   */
   loadTex(url) {
     this.texCache ||= new Map();
-    if (this.texCache.has(url)) return this.texCache.get(url);
-    const p = new Promise((res, rej) => new THREE.TextureLoader().load(url, (t) => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = this.renderer.capabilities.getMaxAnisotropy(); res(t); }, undefined, rej));
+    if (this.texCache.has(url)) { const p = this.texCache.get(url); this.texCache.delete(url); this.texCache.set(url, p); return p; }   // свежее — в конец очереди
+    const p = new Promise((res, rej) => new THREE.TextureLoader().load(url, (t) => {
+      t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
+      t.anisotropy = 1; t.userData.url = url;
+      try { this.renderer.initTexture(t); } catch { /* загрузится при первом кадре */ }
+      res(t);
+    }, undefined, rej));
     this.texCache.set(url, p);
-    if (this.texCache.size > 10) { const [k, v] = this.texCache.entries().next().value; this.texCache.delete(k); v.then((t) => t.dispose()).catch(() => {}); }
+    this.trimTex();
     return p;
   }
+  trimTex() {
+    const limit = this.lite || matchMedia('(pointer: coarse)').matches ? 4 : 8;
+    const inUse = new Set([this.sphere, this.fading].filter(Boolean).map((s) => s.material.map?.userData.url));
+    for (const [k, v] of this.texCache) {
+      if (this.texCache.size <= limit) break;
+      if (inUse.has(k)) continue;
+      this.texCache.delete(k);
+      v.then((t) => { if (![this.sphere, this.fading].some((s) => s?.material.map === t)) t.dispose(); }).catch(() => {});
+    }
+  }
   /** Заранее подгрузить фото соседних точек — переход к ним начнётся без задержки. */
-  preload(urls) { for (const u of urls) if (u) this.loadTex(u).catch(() => {}); }
+  preload(urls) { for (const u of urls.filter(Boolean).slice(0, this.lite || matchMedia('(pointer: coarse)').matches ? 2 : 4)) this.loadTex(u).catch(() => {}); }
   makeSphere(tex, rotDeg, pos) {
     // сфера большая: камера при переходе едет внутри обеих сфер, и фото не «рвётся»
     const g = new THREE.SphereGeometry(400, 64, 40); g.scale(-1, 1, 1);
@@ -579,14 +629,14 @@ export class Scene3D {
       g.add(hit, disc, arrow);
       // одно и то же расстояние по обеим осям — стрелка лежит точно в направлении перехода
       g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * R, -this.look.pos.y + 0.2 + Math.max(0, this.look.pos.y - 1.6), uy * R)));
-      const l = this.label(`${it.next ? 'Дальше: ' : ''}${it.name} · ${Math.round(L)} м`, { px: 9, bg: it.next ? 'rgba(227,6,19,.92)' : 'rgba(23,24,26,.78)', fg: '#fff', maxDist: 1e9 });
+      const l = this.label(`${it.next ? 'Дальше: ' : ''}${it.name}`, { px: 9, bg: it.next ? 'rgba(227,6,19,.92)' : 'rgba(23,24,26,.78)', fg: '#fff', maxDist: 1e9 });
       l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.22, 0); g.add(l);
       this.groups.arrows.add(g);
     }
   }
   /** Показать фото 360° в текущей точке (rotDeg — поворот фото, чтобы оно совпало с планом и стрелками). */
   async setPhoto(url, rotDeg) {
-    this.dirty = true;
+    this.dirty = true; this.lastPhoto = url ? { url, rot: rotDeg } : null;
     this.dropSphere(this.sphere); this.sphere = null; this.dropSphere(this.fading); this.fading = null;
     if (!url || !this.look) { this.setWorldVisible(true); return true; }
     this.setWorldVisible(false);   // сразу прячем 3D, чтобы до загрузки фото не мелькала модель
@@ -702,7 +752,7 @@ export class Scene3D {
       const t = this.controls.target, H = this.half || { x: 480, z: 340 }; t.x = Math.max(-H.x, Math.min(H.x, t.x)); t.z = Math.max(-H.z, Math.min(H.z, t.z)); t.y = 0;
     }
     if (a) this.dirty = true;
-    if (!this.dirty) return;               // рисуем только когда что-то изменилось — бережём батарею
+    if (!this.dirty || this.lost) return;  // рисуем только когда что-то изменилось — бережём батарею
     this.dirty = false;
     if (!this.look) this.fitDepth();
     const cam = this.camera.position;
