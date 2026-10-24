@@ -1,29 +1,36 @@
 /* Карта «Ростов Арены». Мобильная вёрстка в первую очередь: системный шрифт, 14 px текста,
    крупные зоны нажатия при компактной типографике. Раскладка: карта во весь экран + шторка снизу;
    от 900 px шторка становится боковой панелью. */
+/* Фирменный шрифт ТТК — PT Sans (ParaType, свободная лицензия: assets/fonts/PT-Free-Font-License-*.txt) */
+@font-face { font-family: "PT Sans"; src: url("../assets/fonts/PTS55F.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "PT Sans"; src: url("../assets/fonts/PTS56F.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "PT Sans"; src: url("../assets/fonts/PTS75F.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "PT Sans"; src: url("../assets/fonts/PTS76F.ttf") format("truetype"); font-weight: 700; font-style: italic; font-display: swap; }
+
+/* Цвета ТТК: красный, белый, серый. Тема выбирается кнопкой и хранится в браузере (data-theme на <html>). */
 :root {
-  --bg: #f2f1ee; --surface: #ffffff; --surface-2: #f5f4f1; --ink: #17181a; --ink-2: #5d6066; --ink-3: #8a8d93;
-  --line: #e4e2dd; --line-strong: #9a958c; --accent: #e3242b; --accent-ink: #ffffff; --pano: #2f6fe0; --ok: #1f9d55; --warn: #c97f00;
-  --plaza: #e6e2da; --room: #fbfaf7; --wall-line: #3d3b38; --grid: #e2ded7; --podium: #ebe9e4; --bowl: #d3d0c9;
+  --bg: #f3f3f3; --surface: #ffffff; --surface-2: #f2f2f2; --ink: #1e1e1e; --ink-2: #5c5c5c; --ink-3: #8c8c8c;
+  --line: #e1e1e1; --line-strong: #9b9b9b; --accent: #e30613; --accent-ink: #ffffff; --pano: #c4121c; --ok: #2e9b4f; --warn: #c97f00;
+  --plaza: #e7e7e7; --room: #fbfbfb; --wall-line: #3a3a3a; --grid: #e0e0e0; --podium: #ebebeb; --bowl: #d2d2d2;
   --shadow: 0 1px 2px rgba(20, 20, 20, .08), 0 6px 20px rgba(20, 20, 20, .10);
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font: "PT Sans", "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: "PT Sans", ui-monospace, Consolas, monospace;
   --r: 12px; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #111214; --surface: #1b1c1f; --surface-2: #232428; --ink: #ecebe8; --ink-2: #a9a8a4; --ink-3: #7f7f7c;
-    --line: #2d2e32; --line-strong: #6d6a65; --accent: #ff3b42; --pano: #5b92ff;
-    --plaza: #26282c; --room: #2c2e33; --wall-line: #d2cfca; --grid: #222428; --podium: #303237; --bowl: #3a3c41;
+    --bg: #121212; --surface: #1d1d1d; --surface-2: #262626; --ink: #f1f1f1; --ink-2: #ababab; --ink-3: #7d7d7d;
+    --line: #2e2e2e; --line-strong: #6b6b6b; --accent: #ff1f2d; --pano: #ff4d55;
+    --plaza: #262626; --room: #2c2c2c; --wall-line: #d4d4d4; --grid: #222222; --podium: #303030; --bowl: #3b3b3b;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .4); color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #111214; --surface: #1b1c1f; --surface-2: #232428; --ink: #ecebe8; --ink-2: #a9a8a4; --ink-3: #7f7f7c;
-  --line: #2d2e32; --line-strong: #6d6a65; --accent: #ff3b42; --pano: #5b92ff;
-  --plaza: #26282c; --room: #2c2e33; --wall-line: #d2cfca; --grid: #222428; --podium: #303237; --bowl: #3a3c41;
+  --bg: #121212; --surface: #1d1d1d; --surface-2: #262626; --ink: #f1f1f1; --ink-2: #ababab; --ink-3: #7d7d7d;
+  --line: #2e2e2e; --line-strong: #6b6b6b; --accent: #ff1f2d; --pano: #ff4d55;
+  --plaza: #262626; --room: #2c2c2c; --wall-line: #d4d4d4; --grid: #222222; --podium: #303030; --bowl: #3b3b3b;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .4); color-scheme: dark;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -72,6 +79,20 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .glyph { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; flex: none; }
 .glyph.sm { width: 22px; height: 22px; font-size: 10px; }
+.glyph.ico { background: #fff; box-shadow: inset 0 0 0 1.5px var(--accent); padding: 4px; }
+.glyph.ico img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.glyph.sm.ico { padding: 3px; }
+/* подсказка с названием точки при наведении на карте */
+.map-tip { position: fixed; z-index: 120; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 13px; font-weight: 700; padding: 5px 9px; border-radius: 8px; box-shadow: var(--shadow); white-space: nowrap; max-width: 70vw; overflow: hidden; text-overflow: ellipsis; }
+/* кнопка темы: в светлой показываем луну, в тёмной — солнце */
+.theme-btn .th-sun { display: none; }
+:root[data-theme="dark"] .theme-btn .th-sun { display: block; }
+:root[data-theme="dark"] .theme-btn .th-moon { display: none; }
+.tool-img { width: 22px; height: 22px; object-fit: contain; }
+.glyph.xs { width: 18px; height: 18px; font-size: 9px; padding: 2px; }
+.guide-field .lbl { display: inline-flex; align-items: center; gap: 5px; }
+.guide-field .lbl .ic { width: 15px; height: 15px; color: var(--accent); }
+.guide-field .row { justify-content: space-between; }
 
 /* ---------- шторка ---------- */
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--surface); border-radius: 16px 16px 0 0; box-shadow: 0 -2px 18px rgba(0, 0, 0, .12); display: flex; flex-direction: column; height: 46%; transition: height .28s cubic-bezier(.2, .8, .2, 1); padding-bottom: var(--safe-b); }
@@ -169,6 +190,40 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .look-hint { position: absolute; left: 50%; bottom: calc(60px + var(--safe-b)); transform: translateX(-50%); background: rgba(18, 19, 22, .7); color: #fff; font-size: 12px; padding: 6px 10px; border-radius: 8px; white-space: nowrap; transition: opacity .4s; }
 .pano-embed { position: absolute; inset: 0; z-index: 35; background: #121316; }
 .pano-embed iframe { width: 100%; height: 100%; border: 0; display: block; }
+/* ---------- маскот ТТК ---------- */
+/* --m — размер, который задаёт админ. Картинки «выглядывает» 1254×1254, видимая часть маскота — x 684…1198, y 176…1068:
+   показываем только её и прижимаем к правому краю окна, будто он прячется за ним. */
+.mascot { position: fixed; right: 0; bottom: 0; z-index: 95; pointer-events: none; --m: 1; }
+.mascot > * { pointer-events: auto; }
+.mascot-peek { position: absolute; right: 0; bottom: calc(10px + var(--safe-b)); width: calc(96px * var(--m)); aspect-ratio: 514 / 892; border: 0; padding: 0; cursor: pointer;
+  background: url("../assets/mascot/peek-1.png") 92.4% 48.6% / 244% auto no-repeat; image-rendering: pixelated; transition: transform .35s cubic-bezier(.2, .8, .2, 1), opacity .25s; transform-origin: right bottom; }
+.mascot-peek:hover, .mascot-peek:focus-visible { background-image: url("../assets/mascot/peek-2.png"); transform: translateX(-4px) scale(1.04); }
+.mascot.out .mascot-peek { transform: translateX(110%); opacity: 0; pointer-events: none; }
+.mascot-body { position: absolute; right: calc(6px + var(--safe-r)); bottom: calc(4px + var(--safe-b)); height: calc(250px * var(--m)); width: auto; image-rendering: pixelated;
+  transform: translateX(120%); transition: transform .45s cubic-bezier(.2, .8, .2, 1); filter: drop-shadow(0 6px 10px rgba(0, 0, 0, .25)); pointer-events: none; }
+.mascot-body.pose { height: calc(270px * var(--m)); }
+.mascot.out .mascot-body { transform: translateX(0); }
+/* облако реплики: размер фиксирован, длинный текст прокручивается ползунком справа */
+.mascot-cloud { position: absolute; right: calc(150px * var(--m) + 8px); bottom: calc(150px * var(--m)); width: min(340px, calc(100vw - 150px * var(--m) - 28px)); height: 148px;
+  background: var(--surface); color: var(--ink); border: 2px solid var(--accent); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 34px 12px 14px;
+  display: flex; flex-direction: column; opacity: 0; transform: translateY(10px) scale(.96); transform-origin: right bottom; visibility: hidden;
+  transition: opacity .3s ease, transform .3s ease, visibility 0s linear .3s; }
+.mascot-cloud.on { opacity: 1; transform: none; visibility: visible; transition: opacity .3s ease, transform .3s ease; }
+.mascot-cloud::after { content: ""; position: absolute; right: -10px; bottom: 22px; border: 9px solid transparent; border-left-color: var(--accent); border-right: 0; }
+.mascot-text { flex: 1; overflow-y: auto; font-size: 15px; line-height: 1.45; padding-right: 6px; scrollbar-width: thin; scrollbar-color: var(--accent) var(--surface-2); }
+.mascot-text::-webkit-scrollbar { width: 6px; }
+.mascot-text::-webkit-scrollbar-track { background: var(--surface-2); border-radius: 3px; }
+.mascot-text::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+.mascot-text p { margin: 0 0 6px; }
+.mascot-x { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border: 0; border-radius: 6px; background: var(--surface-2); color: var(--ink-2); font-size: 18px; line-height: 1; display: grid; place-items: center; }
+.mascot-x:hover { background: var(--accent); color: #fff; }
+@media (max-width: 600px) {
+  .mascot-peek { width: calc(72px * var(--m)); }
+  .mascot-body { height: calc(190px * var(--m)); } .mascot-body.pose { height: calc(205px * var(--m)); }
+  .mascot-cloud { right: calc(110px * var(--m) + 6px); bottom: calc(110px * var(--m)); height: 132px; font-size: 14px; }
+}
+/* в режиме панорамы мини-карта уходит наверх, чтобы не спорить с маскотом в правом нижнем углу */
+.look-ui .mini { bottom: auto; top: calc(64px + var(--safe-t)); }
 /* цилиндрическая панорама своей точки */
 .cyl { position: fixed; inset: 0; z-index: 90; background: #0d0e10; }
 .cyl canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }

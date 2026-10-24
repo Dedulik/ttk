@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { CATS, PCATS, catColor, elevOf, floorById, floorsSorted, kindOf, mapBox, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, TIERS, ring, secMid, sp } from './stadium.js';
+import { iconImage, iconsReady } from './icons.js';
+import { hideTip, showTip } from './ui.js';
 
 const PI = Math.PI;
 const NEAR_ORBIT = 1.5, NEAR_LOOK = 0.2;
@@ -117,7 +119,7 @@ export class Scene3D {
   sizeSprite(s) { const h = (2 * s.userData.px * Math.tan((this.camera.fov * PI) / 360)) / Math.max(1, this.el.clientHeight); s.scale.set(h * s.userData.aspect, h, 1); }
   resizeSprites() { for (const s of this.screenSprites) this.sizeSprite(s); }
   label(text, { px = 13, bg = 'rgba(255,255,255,.94)', fg = '#17181a', weight = 600, maxDist = 400 } = {}) {
-    const font = `${weight} 26px -apple-system, "Segoe UI", Roboto, sans-serif`;
+    const font = `${weight} 26px "PT Sans", "Segoe UI", Roboto, sans-serif`;
     const g0 = document.createElement('canvas').getContext('2d'); g0.font = font;
     const w = Math.ceil(g0.measureText(text).width / 2) + 18, h = 22;
     const s = this.canvasSprite((g) => {
@@ -130,6 +132,8 @@ export class Scene3D {
   // ---------- сборка карты ----------
   setMap(map) {
     this.map = map;
+    // значки и шрифт рисуются на холсте — когда они догрузятся, пересобираем один раз
+    if (!this.assetsReady) { this.assetsReady = true; Promise.all([iconsReady, document.fonts?.ready]).then(() => this.map && this.setMap(this.map)); }
     // центр сцены — середина стадиона «Ростов Арены» или рамка объекта, собранного с нуля
     const b = mapBox(map);
     if (map.stadium) { C.x = 400; C.y = 262; this.span = 1; }
@@ -333,23 +337,28 @@ export class Scene3D {
     mesh.castShadow = mesh.receiveShadow = true; mesh.userData.ref = 'sec:' + s.id; return mesh;
   }
 
+  // метки: булавка со значком ТТК на белом круге; названия на карте не пишем — они всплывают при наведении
   buildPois() {
     for (const p of this.map.pois.filter(this.vis)) {
-      const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g;
+      const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g, img = iconImage(p.cat), red = css('--accent') || '#e30613';
       const pin = this.canvasSprite((x, w, h) => {
-        x.fillStyle = 'rgba(0,0,0,.25)'; x.beginPath(); x.ellipse(w / 2, h - 2, 5, 2, 0, 0, 2 * PI); x.fill();
-        x.fillStyle = c; x.strokeStyle = '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 14, 11.5, 0, 2 * PI); x.fill(); x.stroke();
-        x.beginPath(); x.moveTo(w / 2 - 5, 23); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 5, 23); x.fill();
-        x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 9 : 12}px -apple-system, "Segoe UI", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 14.5);
-      }, 30, 40, 34, { cy: 0, order: 20 });
-      pin.position.copy(W(p.x, p.y, pz + 0.3)); pin.userData.ref = p.id; this.groups.pois.add(pin);
-      if (!this.on('labels')) continue;
-      const l = this.label(p.name, { px: 12, maxDist: 260 }); l.center.set(0.5, -1.15); l.position.copy(W(p.x, p.y, pz + 0.3)); l.userData.ref = p.id; this.groups.pois.add(l);
+        x.fillStyle = 'rgba(0,0,0,.25)'; x.beginPath(); x.ellipse(w / 2, h - 2, 6, 2.2, 0, 0, 2 * PI); x.fill();
+        x.fillStyle = img ? red : c; x.beginPath(); x.moveTo(w / 2 - 6, 26); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 6, 26); x.fill();
+        x.fillStyle = img ? '#fff' : c; x.strokeStyle = img ? red : '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 16, 13.5, 0, 2 * PI); x.fill(); x.stroke();
+        if (img) x.drawImage(img, w / 2 - 9.5, 6.5, 19, 19);
+        else { x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 10 : 13}px "PT Sans", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 16.5); }
+      }, 34, 46, 38, { cy: 0, order: 20 });
+      pin.position.copy(W(p.x, p.y, pz + 0.3)); pin.userData.ref = p.id; pin.userData.tip = p.name; this.groups.pois.add(pin);
     }
   }
   buildPanos() {
+    const img = iconImage('pano'), red = css('--pano') || '#c4121c';
     for (const p of this.map.panos.filter(this.vis)) {
-      const s = this.canvasSprite((x, w, h) => { x.fillStyle = '#2f6fe0'; x.strokeStyle = '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, h / 2, 7.5, 0, 2 * PI); x.fill(); x.stroke(); }, 20, 20, 16, { order: 15 });
+      const s = this.canvasSprite((x, w, h) => {
+        x.fillStyle = '#fff'; x.strokeStyle = red; x.lineWidth = 2; x.beginPath(); x.arc(w / 2, h / 2, w / 2 - 1.5, 0, 2 * PI); x.fill(); x.stroke();
+        if (img) x.drawImage(img, 3.5, 3.5, w - 7, h - 7);
+      }, 26, 26, 22, { order: 15 });
+      s.userData.tip = p.name;
       s.position.copy(W(p.x, p.y, this.z0(p) + (p.z || 0) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
     }
   }
@@ -466,7 +475,7 @@ export class Scene3D {
       const dx = it.x - x, dy = it.y - y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, g = new THREE.Group();
       g.userData.to = it.id;
       const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-PI / 2);
-      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x2f6fe0, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
+      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
       const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
       g.add(disc, arrow); g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * 2.7, -this.look.pos.y + 0.25 + Math.max(0, this.look.pos.y - 1.6), uy * 2.7)));
       const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 11, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.7, 0); g.add(l);
@@ -501,8 +510,17 @@ export class Scene3D {
         g.yaw = this.look.yaw; g.pitch = this.look.pitch;
       }
     });
+    // наведение без нажатия: название метки или точки обзора — подсказкой у курсора (не чаще раза за кадр)
+    let tipQ = null;
+    el.addEventListener('pointerleave', () => hideTip());
+    el.addEventListener('pointermove', (e) => {
+      if (ptr.size || e.pointerType === 'touch') return;
+      if (!tipQ) requestAnimationFrame(() => { const q = tipQ; tipQ = null; this.hoverTip(q.x, q.y); });
+      tipQ = { x: e.clientX, y: e.clientY };
+    });
     el.addEventListener('pointermove', (e) => {
       if (!ptr.has(e.pointerId) || !g) return;
+      hideTip();
       const prev = ptr.get(e.pointerId); ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 6) g.moved = true;
       if (!this.look || this.anim?.look) return;
@@ -519,6 +537,14 @@ export class Scene3D {
     };
     el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
     el.addEventListener('wheel', (e) => { if (!this.look) return; e.preventDefault(); this.look.fov = Math.max(32, Math.min(90, this.look.fov * (e.deltaY > 0 ? 1.08 : 0.93))); this.applyLook(); }, { passive: false });
+  }
+  hoverTip(cx, cy) {
+    const r = this.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+    const ray = new THREE.Raycaster(); ray.setFromCamera(v, this.camera);
+    const pools = (this.look ? [this.groups.pois] : [this.groups.pois, this.groups.panos]).filter((g) => g.visible);
+    const hit = ray.intersectObjects(pools, true).find((h) => h.object.visible !== false && h.object.userData.tip);
+    if (hit) { showTip(hit.object.userData.tip, cx, cy); this.renderer.domElement.style.cursor = 'pointer'; }
+    else { hideTip(); this.renderer.domElement.style.cursor = ''; }
   }
   tap(cx, cy) {
     const r = this.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);

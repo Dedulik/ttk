@@ -1,6 +1,6 @@
 // Админ-панель: вход, объекты (конструктор с нуля), личный кабинет, команда и администраторы, безопасность.
 import { ROLE_NAMES, authorLink, can, objectLink } from '../core/api.js';
-import { $, esc, fmtDate, icon, photo, toast } from '../core/ui.js';
+import { $, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
 
 const ACTIONS = {
   login: 'Вход', login_failed: 'Неверный пароль', account_locked: 'Учётная запись заблокирована', password_change: 'Смена пароля',
@@ -54,6 +54,7 @@ export async function cabinet(root, api, user, section) {
       <nav class="cab-nav">${Object.entries(SECTIONS).filter(([, v]) => !v.admin || isAdmin).map(([k, v]) => `<a href="#/${k === 'objects' ? '' : k}" aria-current="${k === section ? 'page' : 'false'}">${icon(v.ic)}<span>${v.n}</span></a>`).join('')}</nav>
       <div class="cab-me">
         <span class="avatar">${initial(user)}</span><span class="t"><b>${esc(user.name || user.email)}</b><span>${ROLE_NAMES[user.role]}${api.demo ? ' · демо' : ''}</span></span>
+        ${themeButton('iconbtn flat')}
         <button class="iconbtn flat" data-act="logout" aria-label="Выйти" title="Выйти">${icon('logout')}</button>
       </div>
     </aside>

@@ -18,8 +18,8 @@ export const TOOLS = {
   ],
   points: [
     { id: 'select', n: 'Выбор', ic: 'select', key: 'v' },
-    { id: 'poi', n: 'Метка', ic: 'pin', key: 'm' },
-    { id: 'pano', n: 'Панорама', ic: 'pano', key: 'p', pano: true },
+    { id: 'poi', n: 'Метка', ic: 'pin', img: 'marker', key: 'm' },
+    { id: 'pano', n: 'Панорама', ic: 'pano', img: 'pano', key: 'p', pano: true },
     { id: 'link', n: 'Связь', ic: 'link', key: 'l', pano: true },
     { id: 'erase', n: 'Ластик', ic: 'erase', key: 'e' },
   ],
