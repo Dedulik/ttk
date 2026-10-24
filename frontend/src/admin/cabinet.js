@@ -123,11 +123,6 @@ export async function cabinet(root, api, user, section) {
     const all = (await api.venues()).sort((a, b) => (b.slug === DEFAULT_SLUG) - (a.slug === DEFAULT_SLUG)), mine = all.filter((v) => v.owner?.handle === user.handle);
     let showAll = !isAdmin || !mine.length;
     if (isAdmin) $('#headActs').innerHTML = `<button class="btn primary" data-act="newObj">${icon('rect')}Новый объект</button>`;
-    const myLink = user.handle ? authorLink(user.handle) : null;
-    const linkCard = isAdmin && myLink ? `<section class="card my-link">
-      <div><h2 style="font-size:16px">Ваша ссылка для посетителей</h2><p class="cap" style="margin:2px 0 0">По ней откроются только ваши опубликованные объекты: один — сразу карта, несколько — список. Сейчас опубликовано: ${mine.filter((v) => v.published).length}.</p></div>
-      <div class="row nowrap"><input class="inp mono" readonly value="${esc(myLink)}" aria-label="Ваша ссылка"><button class="btn sm dark" data-copy="${esc(myLink)}">${icon('copy')}Копировать</button><a class="btn sm" href="${esc(myLink)}" target="_blank" rel="noopener">${icon('eye')}Открыть</a></div>
-      <a class="txt-btn" href="#/account" style="align-self:flex-start">Изменить адрес ссылки</a></section>` : '';
     const list = all;
     const card = (v) => `<article class="obj">
       <div class="obj-top"><span class="obj-ic">${esc(v.name.trim()[0] || '?')}</span><div class="t"><h2>${esc(v.name)}</h2><span class="mono">${esc(v.slug)}</span></div>
@@ -143,7 +138,7 @@ export async function cabinet(root, api, user, section) {
       <div class="obj-extra" hidden></div>
     </article>`;
     const grid = () => { const vs = showAll ? all : mine; $('#grid').innerHTML = vs.map(card).join('') || '<p class="cap">Пока нет ни одного объекта.</p>'; };
-    body.innerHTML = `${linkCard}${isAdmin ? newForm(list) : ''}
+    body.innerHTML = `${isAdmin ? newForm(list) : ''}
       ${isAdmin && mine.length ? `<div class="seg" id="own"><button data-own="mine" aria-pressed="${!showAll}">Мои · ${mine.length}</button><button data-own="all" aria-pressed="${showAll}">Все · ${all.length}</button></div>` : ''}
       <div class="obj-grid" id="grid"></div>`;
     grid();

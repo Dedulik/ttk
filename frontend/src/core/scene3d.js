@@ -441,10 +441,9 @@ export class Scene3D {
     this.syncQuest();
   }
   setQuestFound(ids) { this.questFound = new Set(ids); if (this.map) { clear(this.groups.quest); this.buildQuest(); } this.dirty = true; }
-  /** Маркеры мест в режиме панорамы: только в радиусе 60 м от точки обзора; в обзоре карты — все. */
+  /** Маркеры мест (туалет, еда и т. п.) видны в обзоре карты; в панораме их нет — они загромождали фото. */
   syncMarkers() {
-    const L = this.look;
-    for (const s of this.groups.pois.children) s.visible = !L || s.position.distanceTo(L.pos) < 60;
+    this.groups.pois.visible = !this.look;
     this.dirty = true;
   }
   syncQuest() {
