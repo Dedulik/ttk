@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { CATS, PCATS, catColor, elevOf, floorById, floorsSorted, kindOf, mapBox, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, TIERS, ring, secMid, sp } from './stadium.js';
-import { iconImage, iconsReady } from './icons.js';
+import { iconImage, iconsReady, pointIconImage } from './icons.js';
 import { hideTip, showTip } from './ui.js';
 
 const PI = Math.PI;
@@ -36,7 +36,7 @@ export class Scene3D {
     this.controls.addEventListener('change', () => (this.dirty = true));
     Object.assign(this.controls, { enableDamping: true, dampingFactor: 0.09, maxPolarAngle: 1.32, minDistance: 14, maxDistance: 1100, zoomToCursor: true, screenSpacePanning: false, rotateSpeed: 0.6 });
     this.groups = {};
-    for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos', 'route', 'arrows']) { this.groups[k] = new THREE.Group(); this.scene.add(this.groups[k]); }
+    for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos', 'route', 'arrows', 'quest']) { this.groups[k] = new THREE.Group(); this.scene.add(this.groups[k]); }
     this.addLights();
     this.bindPointer();
     new ResizeObserver(() => this.resize()).observe(el);
@@ -144,7 +144,7 @@ export class Scene3D {
     Object.assign(sh, { left: -ext, right: ext, top: ext, bottom: -ext }); sh.updateProjectionMatrix();
     this.sun.position.set(-260 * (ext / 440), 420, 300 * (ext / 440)); this.sun.target.position.set(0, 0, 0);
     this.theme();
-    for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos']) clear(this.groups[k]);
+    for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos', 'quest']) clear(this.groups[k]);
     this.screenSprites = this.screenSprites.filter((s) => this.groups.arrows.getObjectById(s.id) || this.groups.route.getObjectById(s.id));
     this.culled = [];
     const on = this.on, ground = floorsSorted(map)[0].id;
@@ -153,6 +153,7 @@ export class Scene3D {
     this.z0 = (o) => elevOf(map, o);
     this.vis = (o) => this.z0(o) <= top + 0.01;
     this.buildGround(); this.buildShapes(); if (map.stadium && on('stadium') && this.vis({ floor: ground })) this.buildStadium(); if (on('pois')) this.buildPois(); if (on('panos')) this.buildPanos();
+    this.buildQuest();
     if (this.route) this.setRoute(this.route);
     this.groups.roof.visible = this.roof; this.dirty = true;
   }
@@ -339,25 +340,61 @@ export class Scene3D {
 
   // метки: булавка со значком ТТК на белом круге; названия на карте не пишем — они всплывают при наведении
   buildPois() {
-    for (const p of this.map.pois.filter(this.vis)) {
-      const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g, img = iconImage(p.cat), red = css('--accent') || '#e30613';
+    for (const p of this.map.pois.filter((q) => q.cat !== 'quest' && this.vis(q))) {
+      const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g, img = pointIconImage(p, p.cat, () => this.map && this.setMap(this.map)), red = css('--accent') || '#e30613';
       const pin = this.canvasSprite((x, w, h) => {
         x.fillStyle = 'rgba(0,0,0,.25)'; x.beginPath(); x.ellipse(w / 2, h - 2, 6, 2.2, 0, 0, 2 * PI); x.fill();
         x.fillStyle = img ? red : c; x.beginPath(); x.moveTo(w / 2 - 6, 26); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 6, 26); x.fill();
         x.fillStyle = img ? '#fff' : c; x.strokeStyle = img ? red : '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 16, 13.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, w / 2 - 9.5, 6.5, 19, 19);
         else { x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 10 : 13}px "PT Sans", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 16.5); }
-      }, 34, 46, 38, { cy: 0, order: 20 });
+      }, 34, 46, 33, { cy: 0, order: 20 });
       pin.position.copy(W(p.x, p.y, pz + 0.3)); pin.userData.ref = p.id; pin.userData.tip = p.name; this.groups.pois.add(pin);
     }
   }
+  // «Пиксельная охота»: пиксели ТТК видны только в панорамах, в радиусе 35 м (в конструкторе — всегда)
+  buildQuest() {
+    const items = this.map.pois.filter((p) => p.cat === 'quest' && this.vis(p) && !this.questFound?.has(p.id));
+    if (!items.length) return;
+    if (!this.questTex) {
+      this.questTex = new THREE.TextureLoader().load(new URL('../../assets/icons/pixel.png', import.meta.url).href, () => (this.dirty = true));
+      this.questTex.magFilter = THREE.NearestFilter; this.questTex.colorSpace = THREE.SRGBColorSpace;
+    }
+    for (const p of items) {
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.questTex, transparent: true, depthTest: false, fog: false }));
+      s.scale.set(0.5, 0.5, 1); s.renderOrder = 205;
+      s.position.copy(W(p.x, p.y, this.z0(p) + (Number.isFinite(p.z) ? p.z : 1.3)));
+      s.userData.ref = p.id; s.userData.quest = true; s.userData.tip = 'Пиксель ТТК!';
+      this.groups.quest.add(s);
+    }
+    this.syncQuest();
+  }
+  setQuestFound(ids) { this.questFound = new Set(ids); if (this.map) { clear(this.groups.quest); this.buildQuest(); } this.dirty = true; }
+  syncQuest() {
+    const L = this.look;
+    this.groups.quest.visible = !!L || !!this.questAlways;
+    for (const s of this.groups.quest.children) s.visible = !L || s.position.distanceTo(L.pos) < 35;
+    this.dirty = true;
+  }
+  /** Снимок того, что сейчас на экране (JPEG data URL). Бросает ошибку, если холст «заражён» чужими картинками. */
+  snapshot() { this.renderer.render(this.scene, this.camera); return this.renderer.domElement.toDataURL('image/jpeg', 0.92); }
+  /** Загрузить фото с ограничением по времени; при ошибке — null, а неудачный адрес не остаётся в кэше (можно повторить). */
+  async tryTex(url, ms = 25000) {
+    let timer;
+    const t = await Promise.race([this.loadTex(url), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms); })]).catch(() => null);
+    clearTimeout(timer);
+    if (!t) this.texCache?.delete(url);
+    return t;
+  }
+
   buildPanos() {
-    const img = iconImage('pano'), red = css('--pano') || '#c4121c';
+    const red = css('--pano') || '#c4121c';
     for (const p of this.map.panos.filter(this.vis)) {
+      const img = pointIconImage(p, 'pano', () => this.map && this.setMap(this.map));
       const s = this.canvasSprite((x, w, h) => {
         x.fillStyle = '#fff'; x.strokeStyle = red; x.lineWidth = 2; x.beginPath(); x.arc(w / 2, h / 2, w / 2 - 1.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, 3.5, 3.5, w - 7, h - 7);
-      }, 26, 26, 22, { order: 15 });
+      }, 26, 26, 19, { order: 15 });
       s.userData.tip = p.name;
       s.position.copy(W(p.x, p.y, this.z0(p) + (p.z || 0) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
     }
@@ -405,17 +442,17 @@ export class Scene3D {
   // ---------- камера: взгляд из точки ----------
   enterLook(x, y, z, face, opts = {}) {
     this.anim = null; this.controls.enabled = false;
-    const yaw = face ? Math.atan2(face.y - y, face.x - x) : this.look?.yaw ?? 0;
-    this.look = { pos: W(x, y, z), yaw, pitch: opts.pitch ?? -0.05, fov: 72, plan: { x, y }, kind: opts.kind || 'pano' };
+    const yaw = Number.isFinite(opts.yaw) ? opts.yaw : face ? Math.atan2(face.y - y, face.x - x) : this.look?.yaw ?? 0;
+    this.look = { pos: W(x, y, z), yaw, pitch: opts.pitch ?? -0.05, fov: Math.max(32, Math.min(90, opts.fov || 72)), plan: { x, y }, kind: opts.kind || 'pano' };
     this.camera.near = NEAR_LOOK; this.camera.updateProjectionMatrix();
     this.groups.panos.visible = false; this.groups.route.visible = false; this.groups.roof.visible = this.roof;
-    this.applyLook();
+    this.applyLook(); this.syncQuest();
   }
   exitLook(silent) {
     if (!this.look) return;
     const { plan } = this.look; this.look = null; this.anim = null; this.gliding = false; this.setPhoto(null); clear(this.groups.arrows);
     this.controls.enabled = true; this.groups.panos.visible = true; this.groups.route.visible = true; this.groups.roof.visible = this.roof;
-    this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true;
+    this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true; this.syncQuest();
     if (!silent) { const t = W(plan.x, plan.y); this.camera.position.copy(t.clone().add(new THREE.Vector3(-40, 60, 60))); this.controls.target.copy(t); this.focus(plan.x, plan.y, 60); }
   }
   applyLook() {
@@ -442,7 +479,7 @@ export class Scene3D {
       this.sphere = this.makeSphere(nextTex, next.rot, to); this.sphere.material.opacity = 0;
       if (!old) this.setWorldVisible(true);   // из вида-3D в фото — модель видна, пока фото проявляется
     } else this.setWorldVisible(true);
-    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, both, done: () => { L.plan = { x, y }; this.gliding = false; if (this.sphere) this.setWorldVisible(false); done?.(); } };
+    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, both, done: () => { L.plan = { x, y }; this.gliding = false; if (this.sphere) this.setWorldVisible(false); this.syncQuest(); done?.(); } };
   }
   setWorldVisible(on) { for (const k of ['world', 'stadium', 'labels']) this.groups[k].visible = on; this.groups.roof.visible = on && this.roof; this.dirty = true; }
 
@@ -472,7 +509,9 @@ export class Scene3D {
     const shape = new THREE.Shape([[0, 0.62], [0.56, 0], [0.34, 0], [0, 0.36], [-0.34, 0], [-0.56, 0]].map(([a, b]) => new THREE.Vector2(a, b)));
     const { x, y } = this.look.plan;
     for (const it of items) {
-      const dx = it.x - x, dy = it.y - y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, g = new THREE.Group();
+      // направление: на соседнюю точку по плану или (it.yaw) — туда, где админ поставил стрелку на фото
+      const dx = it.x - x, dy = it.y - y, L = Math.hypot(dx, dy) || 1, g = new THREE.Group();
+      const ux = Number.isFinite(it.yaw) ? Math.cos(it.yaw) : dx / L, uy = Number.isFinite(it.yaw) ? Math.sin(it.yaw) : dy / L;
       g.userData.to = it.id;
       const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-PI / 2);
       const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
@@ -486,13 +525,13 @@ export class Scene3D {
   async setPhoto(url, rotDeg) {
     this.dirty = true;
     this.dropSphere(this.sphere); this.sphere = null; this.dropSphere(this.fading); this.fading = null;
-    if (!url || !this.look) { this.setWorldVisible(true); return; }
+    if (!url || !this.look) { this.setWorldVisible(true); return true; }
     this.setWorldVisible(false);   // сразу прячем 3D, чтобы до загрузки фото не мелькала модель
     const token = (this.photoToken = (this.photoToken || 0) + 1);
     const tex = await this.loadTex(url).catch(() => null);
-    if (token !== this.photoToken || !this.look) return;
-    if (!tex) { this.setWorldVisible(true); return; }
-    this.sphere = this.makeSphere(tex, rotDeg, this.look.pos); this.dirty = true;
+    if (token !== this.photoToken || !this.look) return false;
+    if (!tex) { this.texCache?.delete(url); this.setWorldVisible(true); return false; }
+    this.sphere = this.makeSphere(tex, rotDeg, this.look.pos); this.dirty = true; return true;
   }
   /** Повернуть фото текущей точки (настройка в конструкторе). */
   setPhotoRot(rotDeg) { if (this.sphere) { this.sphere.rotation.y = ((rotDeg || 0) * PI) / 180; this.dirty = true; } }
@@ -541,7 +580,7 @@ export class Scene3D {
   hoverTip(cx, cy) {
     const r = this.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     const ray = new THREE.Raycaster(); ray.setFromCamera(v, this.camera);
-    const pools = (this.look ? [this.groups.pois] : [this.groups.pois, this.groups.panos]).filter((g) => g.visible);
+    const pools = (this.look ? [this.groups.quest, this.groups.pois] : [this.groups.pois, this.groups.panos]).filter((g) => g.visible);
     const hit = ray.intersectObjects(pools, true).find((h) => h.object.visible !== false && h.object.userData.tip);
     if (hit) { showTip(hit.object.userData.tip, cx, cy); this.renderer.domElement.style.cursor = 'pointer'; }
     else { hideTip(); this.renderer.domElement.style.cursor = ''; }
@@ -549,7 +588,7 @@ export class Scene3D {
   tap(cx, cy) {
     const r = this.renderer.domElement.getBoundingClientRect(), v = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     const ray = new THREE.Raycaster(); ray.setFromCamera(v, this.camera);
-    const pools = this.look ? [this.groups.arrows, this.groups.pois] : [this.groups.pois, this.groups.panos, this.groups.labels];
+    const pools = this.look ? [this.groups.quest, this.groups.arrows, this.groups.pois] : [this.groups.quest, this.groups.pois, this.groups.panos, this.groups.labels];
     if (!this.sphere) pools.push(this.groups.stadium, this.groups.world);
     const hits = ray.intersectObjects(pools.filter((g) => g.visible), true).filter((h) => h.object.visible !== false && (h.object.isSprite ? h.object.parent?.visible !== false : true));
     for (const h of hits) {

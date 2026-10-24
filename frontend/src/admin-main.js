@@ -4,7 +4,9 @@
 //   #/team        — команда и администраторы (только администратор)
 //   #/security    — защита базы, резервные копии, журнал (только администратор)
 //   #/edit/<slug> — конструктор карты объекта
-import { can, createApi } from './core/api.js';
+//   #/register    — регистрация посетителя
+//   #/invite/<токен> — принятие приглашения в команду
+import { can, createApi, isStaff } from './core/api.js';
 import { applySavedTheme } from './core/ui.js';
 
 applySavedTheme();
@@ -18,8 +20,11 @@ async function mount() {
   const fresh = root.cloneNode(false); fresh.className = 'boot'; root.replaceWith(fresh); root = fresh;
   try {
     const user = await api.me().catch(() => null);
-    const { loginScreen, cabinet } = await import('./admin/cabinet.js');
-    if (!user) loginScreen(root, api);
+    const { loginScreen, inviteScreen, cabinet } = await import('./admin/cabinet.js');
+    const invite = location.hash.match(/^#\/invite\/([\w-]{20,})/);
+    if (invite) await inviteScreen(root, api, invite[1]);
+    else if (!user) loginScreen(root, api, location.hash === '#/register' ? 'register' : 'login');
+    else if (editing() && !isStaff(user)) { history.replaceState(null, '', '#/account'); return mount(); }
     else if (editing()) {
       const { editor } = await import('./admin/admin.js');
       api.use(decodeURIComponent(location.hash.slice(7).split(/[?#/]/)[0]));

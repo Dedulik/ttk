@@ -1,5 +1,5 @@
 // Админ-панель: вход, объекты (конструктор с нуля), личный кабинет, команда и администраторы, безопасность.
-import { ROLE_NAMES, authorLink, can, objectLink } from '../core/api.js';
+import { ROLE_NAMES, authorLink, can, isStaff, objectLink } from '../core/api.js';
 import { $, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
 
 const ACTIONS = {
@@ -9,49 +9,87 @@ const ACTIONS = {
   venue_delete: 'Удаление объекта', backup_download: 'Скачана резервная копия', handle_change: 'Новый адрес личной ссылки',
 };
 const SECTIONS = {
-  objects: { n: 'Объекты', ic: 'map', sub: 'Карты площадок: создайте новую с чистого листа или продолжите работу над существующей' },
-  account: { n: 'Личный кабинет', ic: 'user', sub: 'Профиль, пароль и ваши последние действия' },
-  team: { n: 'Команда', ic: 'people', sub: 'Все администраторы и сотрудники: роли, доступ, блокировки', admin: true },
-  security: { n: 'Безопасность', ic: 'check', sub: 'Защита базы данных, резервные копии и журнал действий', admin: true },
+  objects: { n: 'Объекты', ic: 'map', sub: 'Карты площадок', staff: true },
+  account: { n: 'Личный кабинет', ic: 'user', sub: 'Профиль, пароль и последние действия' },
+  team: { n: 'Команда', ic: 'people', sub: 'Сотрудники, роли и приглашения', admin: true },
+  security: { n: 'Безопасность', ic: 'check', sub: 'Проверка настроек, резервные копии, журнал', admin: true },
 };
 const initial = (u) => esc((u.name || u.email || '?').trim()[0].toUpperCase());
 const size = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' МБ' : Math.max(1, Math.round(b / 1024)) + ' КБ');
 const field = (label, inner, cls = '') => `<label class="field ${cls}"><span class="lbl">${label}</span>${inner}</label>`;
 
-// ---------------- вход ----------------
-export function loginScreen(root, api) {
+// ---------------- вход и регистрация ----------------
+// mode: 'login' — вход; 'register' — регистрация посетителя (роль всегда «посетитель», админ-права — только по приглашению)
+export function loginScreen(root, api, mode = 'login') {
+  const reg = mode === 'register';
   root.innerHTML = `
   <div class="login"><form id="lf" novalidate>
     <img class="hero" src="${photo('facade')}" alt="">
-    <div><h1>Админ-панель</h1><p class="cap">Вход для администраторов и сотрудников</p></div>
+    <div class="seg auth-tabs" role="tablist"><a href="#/" role="tab" aria-selected="${!reg}" aria-pressed="${!reg}">Вход</a><a href="#/register" role="tab" aria-selected="${reg}" aria-pressed="${reg}">Регистрация</a></div>
+    <div><h1>${reg ? 'Регистрация' : 'Вход'}</h1><p class="cap">${reg ? 'Личный кабинет посетителя и «Пиксельная охота» на картах' : 'Для посетителей, сотрудников и администраторов'}</p></div>
+    ${reg ? '<label class="field"><span class="lbl">Имя</span><input class="inp" id="ln" autocomplete="name" maxlength="80" required></label>' : ''}
     <label class="field"><span class="lbl">Почта</span><input class="inp" id="le" type="email" autocomplete="username" required></label>
-    <label class="field"><span class="lbl">Пароль</span><input class="inp" id="lp" type="password" autocomplete="current-password" required></label>
-    <p class="err" id="lerr" hidden></p>
-    <button class="btn primary full" type="submit">Войти</button>
+    <label class="field"><span class="lbl">Пароль</span><input class="inp" id="lp" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required minlength="${reg ? 8 : 1}"></label>
+    ${reg ? '<p class="cap" style="margin:0">Пароль — от 8 символов, буквы и цифры.</p><input class="hp" id="lw" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">' : ''}
+    <p class="err" id="lerr" role="alert" hidden></p>
+    <button class="btn primary full" type="submit">${reg ? 'Зарегистрироваться' : 'Войти'}</button>
     ${api.demo ? `<div class="demo-note"><b>Демо без сервера.</b> Данные хранятся только в этом браузере.<br>
-      <b>admin@arena.local</b> / admin12345 — администратор<br><b>editor@arena.local</b> / editor12345 — редактор<br><b>viewer@arena.local</b> / viewer12345 — наблюдатель</div>`
-      : '<p class="cap" style="margin:0">Учётные записи выдаёт администратор. После 5 неверных паролей вход блокируется на 15 минут.</p>'}
-    <a class="txt-btn" href="index.html" style="text-align:center">← Карта для посетителей</a>
+      <b>admin@arena.local</b> / admin12345 — администратор<br><b>editor@arena.local</b> / editor12345 — редактор<br><b>viewer@arena.local</b> / viewer12345 — наблюдатель</div>` : ''}
+    <a class="txt-btn" href="index.html" style="text-align:center">← К карте</a>
   </form></div>`;
   $('#lf').addEventListener('submit', async (e) => {
     e.preventDefault();
     const err = $('#lerr'), btn = e.target.querySelector('[type=submit]'); err.hidden = true; btn.disabled = true;
-    try { await api.login($('#le').value, $('#lp').value); window.__remount(); }
-    catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; }
+    try {
+      if (reg) { await api.register({ name: $('#ln').value, email: $('#le').value, password: $('#lp').value, website: $('#lw').value }); toast('Готово! Вы зарегистрированы и вошли', 3500); location.hash = '#/account'; }
+      else { const u = await api.login($('#le').value, $('#lp').value); toast(`Здравствуйте, ${u.name || u.email}!`); }
+      window.__remount();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; }
   });
   root.addEventListener('click', (e) => { const b = e.target.closest('.demo-note b'); if (b && b.textContent.includes('@')) { $('#le').value = b.textContent; $('#lp').value = b.nextSibling.textContent.split('—')[0].replace('/', '').trim(); } });
 }
 
+/** Принятие приглашения по ссылке из письма: admin.html#/invite/<токен>. */
+export async function inviteScreen(root, api, token) {
+  let info;
+  try { info = await api.inviteInfo(token); }
+  catch (e) {
+    root.innerHTML = `<div class="login"><div class="card login-card"><h1>Приглашение</h1><p class="err">${esc(e.message)}</p><a class="btn" href="#/">Ко входу</a></div></div>`;
+    return;
+  }
+  root.innerHTML = `
+  <div class="login"><form id="inf" novalidate>
+    <div><h1>Приглашение в команду</h1><p class="cap">Вас пригласили с ролью «${esc(info.role_name)}». Почта: <b>${esc(info.email)}</b>. Ссылка действует до ${fmtDate(info.expires_at)}.</p></div>
+    ${info.exists ? '<p class="cap" style="margin:0">Учётная запись с этой почтой уже есть — подтвердите её паролем.</p>'
+      : `<label class="field"><span class="lbl">Ваше имя</span><input class="inp" id="in" autocomplete="name" maxlength="80" required></label>`}
+    <label class="field"><span class="lbl">${info.exists ? 'Пароль' : 'Придумайте пароль'}</span><input class="inp" id="ip" type="password" autocomplete="${info.exists ? 'current-password' : 'new-password'}" required></label>
+    ${info.exists ? '' : '<p class="cap" style="margin:0">От 8 символов, буквы и цифры.</p>'}
+    <p class="err" id="inerr" role="alert" hidden></p>
+    <button class="btn primary full" type="submit">Принять приглашение</button>
+  </form></div>`;
+  $('#inf').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = $('#inerr'), btn = e.target.querySelector('[type=submit]'); err.hidden = true; btn.disabled = true;
+    try {
+      const u = await api.acceptInvite(token, { name: $('#in')?.value, password: $('#ip').value });
+      toast(`Добро пожаловать в команду, ${u.name || u.email}! Ваша роль — «${ROLE_NAMES[u.role]}»`, 4500);
+      history.replaceState(null, '', '#/'); window.__remount();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; }
+  });
+}
+
 // ---------------- кабинет ----------------
 export async function cabinet(root, api, user, section) {
-  const isAdmin = can(user, 'admin');
-  if (!SECTIONS[section] || (SECTIONS[section].admin && !isAdmin)) section = 'objects';
+  const isAdmin = can(user, 'admin'), staff = isStaff(user);
+  // доступ к разделам проверяет и сервер; здесь только не показываем лишнего
+  const allowed = (v) => (!v.admin || isAdmin) && (!v.staff || staff);
+  if (!SECTIONS[section] || !allowed(SECTIONS[section])) section = staff ? 'objects' : 'account';
   const S = SECTIONS[section];
   root.innerHTML = `
   <div class="cab">
     <aside class="cab-side">
-      <a class="cab-brand" href="#/"><span class="mark">РА</span><span><b>Админ-панель</b><span>Карта пространства</span></span></a>
-      <nav class="cab-nav">${Object.entries(SECTIONS).filter(([, v]) => !v.admin || isAdmin).map(([k, v]) => `<a href="#/${k === 'objects' ? '' : k}" aria-current="${k === section ? 'page' : 'false'}">${icon(v.ic)}<span>${v.n}</span></a>`).join('')}</nav>
+      <a class="cab-brand" href="${staff ? '#/' : 'index.html'}"><span class="mark">РА</span><span><b>${staff ? 'Админ-панель' : 'Кабинет'}</b><span>Карта пространства</span></span></a>
+      <nav class="cab-nav">${Object.entries(SECTIONS).filter(([, v]) => allowed(v)).map(([k, v]) => `<a href="#/${k === 'objects' ? '' : k}" aria-current="${k === section ? 'page' : 'false'}">${icon(v.ic)}<span>${v.n}</span></a>`).join('')}</nav>
       <div class="cab-me">
         <span class="avatar">${initial(user)}</span><span class="t"><b>${esc(user.name || user.email)}</b><span>${ROLE_NAMES[user.role]}${api.demo ? ' · демо' : ''}</span></span>
         ${themeButton('iconbtn flat')}
@@ -214,21 +252,37 @@ export async function cabinet(root, api, user, section) {
   // ---------- команда и администраторы ----------
   async function team() {
     let filter = 'all', q = '';
-    $('#headActs').innerHTML = `<button class="btn primary" data-act="newUser">${icon('people')}Добавить</button>`;
+    $('#headActs').innerHTML = `<button class="btn primary" data-act="newInvite">${icon('people')}Пригласить</button><button class="btn" data-act="newUser">Создать вручную</button>`;
+    const staffRoles = Object.entries(ROLE_NAMES).filter(([k]) => k !== 'user');
     body.innerHTML = `
+      <form class="card" id="invf" ${api.demo ? 'hidden' : ''}><h2 style="font-size:16px">Пригласить по почте</h2>
+        <div class="grid2">${field('Почта', '<input class="inp" name="email" type="email" required>')}
+          ${field('Роль', `<select class="inp" name="role">${staffRoles.map(([k, v]) => `<option value="${k}" ${k === 'editor' ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}</div>
+        <p class="cap" style="margin:0">Ссылка одноразовая и действует ограниченное время. Если почта на сервере не настроена — ссылку покажем здесь, передайте её лично.</p>
+        <div class="row"><button class="btn dark">Отправить приглашение</button></div>
+        <div id="invLink" hidden></div>
+        <div id="invites"></div></form>
       <form class="card" id="uf" hidden><h2 style="font-size:16px">Новый сотрудник</h2>
         <div class="grid2">${field('Почта', '<input class="inp" name="email" type="email" required>')}${field('Имя', '<input class="inp" name="name">')}</div>
         <div class="grid2">${field('Пароль', `<div class="row nowrap"><input class="inp mono" name="password" type="text" minlength="8" required autocomplete="off"><button type="button" class="btn sm" data-act="gen">Сгенерировать</button></div>`)}
-          ${field('Роль', `<select class="inp" name="role">${Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}" ${k === 'editor' ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}</div>
+          ${field('Роль', `<select class="inp" name="role">${staffRoles.map(([k, v]) => `<option value="${k}" ${k === 'editor' ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}</div>
         <p class="cap" style="margin:0">Передайте пароль человеку лично — после входа он сменит его в личном кабинете.</p>
         <div class="row"><button class="btn dark">Добавить</button><button type="button" class="btn ghost" data-act="newUser">Отмена</button></div></form>
       <div class="card">
-        <div class="row" style="justify-content:space-between"><div class="seg" id="seg">${[['all', 'Все'], ['admin', 'Администраторы'], ['editor', 'Редакторы'], ['viewer', 'Наблюдатели']].map(([k, n]) => `<button data-f="${k}" aria-pressed="${k === filter}">${n}</button>`).join('')}</div>
+        <div class="row" style="justify-content:space-between"><div class="seg" id="seg">${[['all', 'Все'], ['admin', 'Администраторы'], ['editor', 'Редакторы'], ['viewer', 'Наблюдатели'], ['user', 'Посетители']].map(([k, n]) => `<button data-f="${k}" aria-pressed="${k === filter}">${n}</button>`).join('')}</div>
           <input class="inp" id="uq" placeholder="Поиск по имени или почте" style="max-width:260px"></div>
         <div id="users"><p class="cap">Загружаю…</p></div>
       </div>
-      <div class="card"><b>Что может каждая роль</b><dl class="kv"><dt>Наблюдатель</dt><dd>смотрит черновики и историю версий</dd><dt>Редактор</dt><dd>рисует в конструкторе, ставит точки, загружает фото</dd><dt>Администратор</dt><dd>всё выше + публикует, создаёт и удаляет объекты, управляет командой, видит журнал и резервные копии</dd></dl></div>`;
+      <div class="card"><b>Что может каждая роль</b><dl class="kv"><dt>Наблюдатель</dt><dd>смотрит черновики и историю версий</dd><dt>Редактор</dt><dd>рисует в конструкторе, ставит точки, загружает фото</dd><dt>Посетитель</dt><dd>регистрируется сам, видит только свой кабинет и прогресс «Пиксельной охоты»</dd><dt>Администратор</dt><dd>всё выше + публикует, создаёт и удаляет объекты, управляет командой, видит журнал и резервные копии</dd></dl></div>`;
     let users = [];
+    const STATE = { pending: ['warn', 'Ждёт ответа'], used: ['ok', 'Принято'], expired: ['bad', 'Истекло'], revoked: ['bad', 'Отозвано'] };
+    const loadInvites = async () => {
+      if (api.demo) return;
+      const list = await api.invites().catch(() => []);
+      $('#invites').innerHTML = list.length ? `<div class="sep"></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Почта</th><th>Роль</th><th>Статус</th><th>Действует до</th><th></th></tr></thead><tbody>
+        ${list.slice(0, 20).map((i) => `<tr data-inv="${i.id}"><td>${esc(i.email)}</td><td>${ROLE_NAMES[i.role]}</td><td><span class="status-pill ${STATE[i.state][0]}">${STATE[i.state][1]}</span></td><td class="nowrap muted">${fmtDate(i.expires_at)}</td>
+          <td>${i.state === 'pending' ? '<button type="button" class="btn sm ghost danger" data-act="revoke">Отозвать</button>' : ''}</td></tr>`).join('')}</tbody></table></div>` : '';
+    };
     const load = async () => { users = await api.users(); render(); };
     const render = () => {
       const rows = users.filter((u) => (filter === 'all' || u.role === filter) && (u.name + ' ' + u.email).toLowerCase().includes(q));
@@ -244,13 +298,24 @@ export async function cabinet(root, api, user, section) {
             ${u.id !== user.id ? `<button class="iconbtn flat" data-u="del" aria-label="Удалить">${icon('erase')}</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="5" class="muted">Никого не нашлось</td></tr>'}
       </tbody></table></div>`;
     };
-    await load();
+    await Promise.all([load(), loadInvites()]);
     body.addEventListener('input', (e) => { if (e.target.id === 'uq') { q = e.target.value.trim().toLowerCase(); render(); } });
-    root.addEventListener('click', (e) => { if (e.target.closest('[data-act="newUser"]')) { const f = $('#uf'); f.hidden = !f.hidden; } });
+    root.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="newUser"]')) { const f = $('#uf'); f.hidden = !f.hidden; }
+      if (e.target.closest('[data-act="newInvite"]')) { const f = $('#invf'); if (api.demo) return toast('Приглашения работают только с сервером'); f.hidden = false; f.querySelector('input').focus(); }
+    });
     body.addEventListener('click', async (e) => {
       const fb = e.target.closest('[data-f]');
       if (fb) { filter = fb.dataset.f; $('#seg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === fb)); return render(); }
       if (e.target.closest('[data-act="gen"]')) { $('#uf [name=password]').value = genPassword(); return; }
+      const rv = e.target.closest('[data-act="revoke"]');
+      if (rv) {
+        if (!confirm('Отозвать приглашение? Ссылка перестанет работать.')) return;
+        try { await api.revokeInvite(+rv.closest('tr').dataset.inv); toast('Приглашение отозвано'); await loadInvites(); } catch (ex) { toast(ex.message, 4000); }
+        return;
+      }
+      const cp = e.target.closest('[data-copy-link]');
+      if (cp) { navigator.clipboard?.writeText(cp.dataset.copyLink).then(() => toast('Ссылка скопирована'), () => toast('Скопируйте ссылку вручную')); return; }
       const b = e.target.closest('[data-u]'); if (!b) return;
       const id = +b.closest('tr').dataset.id, u = users.find((x) => x.id === id);
       try {
@@ -262,7 +327,7 @@ export async function cabinet(root, api, user, section) {
           await api.updateUser(id, { password: pw }); toast(`Новый пароль для ${u.email}: ${pw} — передайте лично`, 12000);
         }
         if (b.dataset.u === 'del') {
-          if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.style.color = 'var(--accent)'; toast('Нажмите ещё раз, чтобы удалить ' + u.email); return; }
+          if (!confirm(`Удалить учётную запись ${u.email}? Это действие нельзя отменить.`)) return;
           await api.deleteUser(id); toast('Удалён');
         }
         await load();
@@ -275,6 +340,17 @@ export async function cabinet(root, api, user, section) {
     });
     body.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (e.target.id === 'invf') {
+        const btn = e.target.querySelector('button.dark'); btn.disabled = true;
+        try {
+          const r = await api.createInvite(Object.fromEntries(new FormData(e.target)));
+          const box = $('#invLink'); box.hidden = false;
+          box.innerHTML = r.emailed ? `<p class="ok-note">Письмо отправлено на ${esc(r.invite.email)}.</p>`
+            : `<p class="cap" style="margin:0">Почта на сервере не настроена. Передайте ссылку лично — она одноразовая:</p><div class="row nowrap"><input class="inp mono" readonly value="${esc(r.link)}"><button type="button" class="btn sm" data-copy-link="${esc(r.link)}">Копировать</button></div>`;
+          e.target.querySelector('[name=email]').value = ''; await loadInvites();
+        } catch (ex) { toast(ex.message, 4000); }
+        btn.disabled = false; return;
+      }
       try { await api.createUser(Object.fromEntries(new FormData(e.target))); toast('Сотрудник добавлен'); e.target.reset(); e.target.hidden = true; await load(); }
       catch (ex) { toast(ex.message, 4000); }
     });

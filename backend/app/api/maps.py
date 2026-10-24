@@ -88,15 +88,57 @@ def who(user_id):
     return (u["name"] or u["email"]) if u else None
 
 
+# что можно хранить в карте: черновик пишет редактор, а показывается он администраторам и посетителям —
+# поэтому сервер не доверяет содержимому и чистит всё, что может стать XSS или ссылкой «куда угодно»
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PANO_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+URL_RE = re.compile(r"^(/uploads/[0-9a-f]{32}\.(jpg|png|webp)|assets/[A-Za-z0-9_/-]+\.(jpg|png|webp))$")
+COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+ICON_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")         # ключ значка из набора
+EMBED_RE = re.compile(r"^https://(www\.google\.[a-z.]{2,12}/maps/embed\?[^\s\"'<>]{1,2000}|www\.youtube-nocookie\.com/embed/[\w-]{11}(\?[\w=&-]{0,100})?)$")
+URL_KEYS = {"img", "photo", "pano", "src", "iconUrl"}
+MAX_STR = 8000
+
+
+def sanitize(node, path=""):
+    """Проходит по всей карте: недопустимые ссылки, цвета и встраивания убирает, слишком длинные строки — отклоняет."""
+    if isinstance(node, dict):
+        for k in list(node):
+            v = node[k]
+            if isinstance(v, str):
+                if len(v) > MAX_STR:
+                    raise ApiError(422, "Слишком длинный текст в карте (больше 8000 символов)")
+                bad = ((k in URL_KEYS and v and not URL_RE.match(v)) or (k == "embed" and v and not EMBED_RE.match(v))
+                       or ((k == "color" or path.startswith("style.")) and v and not COLOR_RE.match(v))
+                       or (k == "icon" and not ICON_RE.match(v)))
+                if bad:
+                    del node[k]          # чужие адреса, javascript:, «"><script» и т.п. — просто не сохраняем
+            elif isinstance(v, float) and v != v:
+                raise ApiError(422, "В карте недопустимое число")
+            else:
+                sanitize(v, f"{path}{k}.")
+    elif isinstance(node, list):
+        for v in node:
+            sanitize(v, path)
+
+
 def validate_map(data) -> str:
     if not isinstance(data, dict):
         raise ApiError(422, "Карта должна быть объектом")
     for key in LISTS:
         if not isinstance(data.setdefault(key, []), list):
             raise ApiError(422, f"Поле «{key}» должно быть списком")
-    ids = [x.get("id") for key in LISTS if key != "links" for x in data[key] if isinstance(x, dict)]
+        if key != "links" and not all(isinstance(x, dict) for x in data[key]):
+            raise ApiError(422, f"В «{key}» должны быть объекты")
+    ids = [x.get("id") for key in LISTS if key != "links" for x in data[key]]
     if None in ids or len(ids) != len(set(ids)):
         raise ApiError(422, "У каждого объекта карты должен быть свой уникальный id")
+    if not all(isinstance(i, str) and ID_RE.match(i) for i in ids):
+        raise ApiError(422, "id объектов — только латиница, цифры, «_» и «-»")
+    slugs = [p.get("slug") for p in data["panos"] if p.get("slug")]
+    if not all(isinstance(x, str) and PANO_SLUG_RE.match(x) for x in slugs) or len(slugs) != len(set(slugs)):
+        raise ApiError(422, "Адреса панорам — латиница, цифры и дефис, без повторов")
+    sanitize(data)
     panos = {p["id"] for p in data["panos"]}
     for link in data["links"]:
         if not (isinstance(link, list) and len(link) == 2 and link[0] in panos and link[1] in panos):
@@ -190,7 +232,7 @@ def delete_venue(slug):
         raise ApiError(400, "Нельзя удалить единственный объект")
     if str((request.get_json(silent=True) or {}).get("confirm", "")) != slug:
         raise ApiError(422, "Для удаления подтвердите адрес объекта")
-    for table in ("map_drafts", "map_versions", "venue_locks"):
+    for table in ("map_drafts", "map_versions", "venue_locks", "quest_finds"):
         run(f"DELETE FROM {table} WHERE venue_id = ?", v["id"])
     run("DELETE FROM venues WHERE id = ?", v["id"])
     audit(g.user["id"], "venue_delete", f"{slug} ({v['name']})")

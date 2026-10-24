@@ -27,5 +27,17 @@ def load() -> dict:
         "ADMIN_EMAIL": env("ADMIN_EMAIL", "admin@arena.local"),
         "ADMIN_PASSWORD": env("ADMIN_PASSWORD", "admin12345"),
         "SEED_DEMO_USERS": env("SEED_DEMO_USERS", "1") == "1",
+        # регистрация посетителей (роль «посетитель», без доступа к админке)
+        "ALLOW_REGISTRATION": env("ALLOW_REGISTRATION", "1") == "1",
+        # приглашения сотрудников и администраторов: срок жизни ссылки, адрес сайта для писем
+        "INVITE_TTL_HOURS": int(env("INVITE_TTL_HOURS", "72")),
+        "PUBLIC_URL": env("PUBLIC_URL", ""),
+        # почта для приглашений; не задано — админ получает ссылку и передаёт её сам
+        "SMTP_HOST": env("SMTP_HOST", ""),
+        "SMTP_PORT": int(env("SMTP_PORT", "587")),
+        "SMTP_USER": env("SMTP_USER", ""),
+        "SMTP_PASSWORD": env("SMTP_PASSWORD", ""),
+        "SMTP_FROM": env("SMTP_FROM", ""),
+        "SMTP_SSL": env("SMTP_SSL", "0") == "1",
         "VENUE_SLUG": "rostov-arena",
     }

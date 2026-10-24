@@ -4,7 +4,9 @@
     viewer  — наблюдатель: видит черновик и историю версий, ничего не меняет
     editor  — редактор: рисует помещения, ставит точки, сохраняет черновик, загружает фото
     admin   — администратор: всё выше + публикация, объекты, сотрудники, журнал и резервные копии
-Посетители карты не входят в систему и видят только опубликованную версию.
+    user    — посетитель, зарегистрировался сам: только личный кабинет и «Пиксельная охота». Админ-права
+              через регистрацию не получить — только по приглашению администратора (api/invites.py).
+Карту без входа видит любой — только опубликованную версию.
 
 Защита:
     · пароли — PBKDF2-SHA256, 200 000 итераций, своя соль у каждого;
@@ -31,9 +33,11 @@ from flask import current_app, g, request
 from .db import one
 from .errors import ApiError
 
-ROLES = ("viewer", "editor", "admin")
+# user — зарегистрированный посетитель: свой кабинет и «Пиксельная охота», никаких прав на карты и черновики
+ROLES = ("user", "viewer", "editor", "admin")
+STAFF_ROLES = ("viewer", "editor", "admin")
 LEVEL = {r: i for i, r in enumerate(ROLES)}
-ROLE_NAMES = {"viewer": "наблюдатель", "editor": "редактор", "admin": "администратор"}
+ROLE_NAMES = {"user": "посетитель", "viewer": "наблюдатель", "editor": "редактор", "admin": "администратор"}
 DEFAULT_SECRET = "dev-only-change-me"
 _ITER = 200_000
 MAX_FAILS, LOCK_MIN = 5, 15
@@ -93,6 +97,18 @@ def ip_blocked(ip: str) -> bool:
         recent = [t for t in _ip_fails.get(ip, []) if time.time() - t < IP_WINDOW]
         _ip_fails[ip] = recent
         return len(recent) >= IP_FAILS
+
+
+def rate(key: str, limit: int, window: int) -> None:
+    """Не больше limit событий за window секунд для ключа (IP, пользователь…); иначе 429."""
+    with _lock:
+        t = time.time()
+        hits = [x for x in _ip_fails.get(key, []) if t - x < window]
+        if len(hits) >= limit:
+            _ip_fails[key] = hits
+            raise ApiError(429, "Слишком много запросов. Попробуйте немного позже")
+        hits.append(t)
+        _ip_fails[key] = hits
 
 
 def ip_failed(ip: str) -> None:
