@@ -1,23 +1,29 @@
 // Конструктор карты объекта: построение, точки и панорамы, стадион (если есть), публикация, версии, цвета.
 // Открывается из админ-панели (admin.html#/edit/<адрес объекта>), вход и кабинет — в cabinet.js.
 import { ROLE_NAMES, can } from '../core/api.js';
-import { CATS, KINDS, PALETTE, PCATS, catColor, clone, kindOf, mapsEmbed, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, standColor } from '../core/model.js';
+import { CATS, KINDS, LAYERS, PALETTE, PCATS, catColor, clone, elevOf, floorById, floorOf, floorsSorted, kindOf, layersFor, visitorLayerMode, mapsEmbed, moveShape, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, shapeLayer, standColor, uid } from '../core/model.js';
 import { Plan2D } from '../core/plan2d.js';
 import { SECTORS, STANDS, ST, secMid, sector, setStadiumCenter } from '../core/stadium.js';
 import { $, Sheet, esc, fmtDate, icon, photo, toast } from '../core/ui.js';
 import { HINTS, TOOLS, createTools } from './tools.js';
 
 // ---------------- редактор ----------------
-export function editor(root, api, user, draft) {
+export function editor(root, api, user, draft, lock = { mine: true }) {
   const isEditor = can(user, 'editor'), isAdmin = can(user, 'admin');
+  // объект занят другим админом — смотрим его сохранённые изменения, но править не можем
+  const lockedBy = isEditor && !lock.mine ? lock.holder : null;
   const venue = draft.venue || { slug: api.slug, name: 'Ростов Арена' };
   let map = draft.data, undo = [], redo = [], saveT = null, rebuildT = null, scene = null;
   const state = {
-    mode: 'build', tool: 'select', sel: null, view: '2d', panel: null, readonly: !isEditor,
+    mode: 'build', tool: 'select', sel: null, view: '2d', panel: null, readonly: !isEditor || !!lockedBy,
     newKind: 'room', snap: 0.5, wallThick: 0.2, doorWidth: 1.6, stairDir: 'x', poiCat: 'info',
     dirty: false, saving: false, savedAt: draft.updated_at, savedBy: draft.updated_by, rev: draft.revision, conflict: false,
-    under: underlayOf(map), underOp: 0.3,
+    under: underlayOf(map), underOp: 0.3, hidden: new Set(), cursor: null, floor: floorsSorted(map)[0].id,
   };
+  const groundId = () => floorsSorted(map)[0].id;
+  const here = (o) => floorOf(o) === state.floor;
+  const layersKey = 'arena.layers.edit.' + venue.slug;
+  try { state.hidden = new Set(JSON.parse(localStorage.getItem(layersKey) || '[]')); } catch { /* все слои видны */ }
   const hasStadium = () => !!map.stadium;
   // подложка: генплан «Ростов Арены» или своя картинка, которую админ загрузил для нового объекта
   function underlayOf(m) { return m.underlay || (m.stadium ? { src: photo('genplan'), x: 0, y: 0, w: 793, h: 523 } : null); }
@@ -30,7 +36,8 @@ export function editor(root, api, user, draft) {
       <a class="iconbtn flat" href="#/" aria-label="К объектам" title="К списку объектов">${icon('back')}</a>
       <div class="title"><b>Конструктор · ${esc(venue.name)}</b><span id="st"><i></i>Черновик</span></div>
       <button class="iconbtn flat" data-act="undo" aria-label="Отменить" title="Отменить (Ctrl+Z)">${icon('undo')}</button>
-      <button class="iconbtn flat" data-act="redo" aria-label="Повторить" title="Повторить (Ctrl+Shift+Z)">${icon('redo')}</button>
+      <button class="iconbtn flat" data-act="redo" aria-label="Повторить" title="Повторить (Ctrl+Y)">${icon('redo')}</button>
+      <button class="iconbtn flat${state.hidden.size ? ' on' : ''}" data-act="layers" aria-label="Слои" title="Слои: что показывать на плане и в 3D">${icon('layers')}</button>
       <button class="iconbtn flat" data-act="view3d" aria-label="3D-просмотр" title="3D-просмотр">${icon('cube')}</button>
       ${isAdmin ? `<button class="btn sm primary" data-act="panel" data-p="publish">${icon('publish')}<span class="hide-s">Опубликовать</span></button>` : ''}
       <button class="iconbtn flat" data-act="panel" data-p="menu" aria-label="Меню">${icon('more')}</button>
@@ -39,6 +46,7 @@ export function editor(root, api, user, draft) {
       <button role="tab" data-mode="build" aria-selected="true">Построение</button>
       <button role="tab" data-mode="points" aria-selected="false">Точки и панорамы</button>
       ${hasStadium() ? '<button role="tab" data-mode="stadium" aria-selected="false">Стадион</button>' : ''}
+      <div class="floor-bar" id="floorBar" aria-label="Этажи"></div>
       <span class="role-tag">${esc(user.name && user.name !== ROLE_NAMES[user.role] ? user.name : user.email)} · ${ROLE_NAMES[user.role]}</span>
     </nav>
     <div class="workspace">
@@ -47,9 +55,11 @@ export function editor(root, api, user, draft) {
         <svg class="plan" aria-label="Редактируемый план"></svg>
         <div class="three" hidden></div>
         <div class="optbar" id="opt"></div>
+        <div class="pop layers-pop" id="lyPop" hidden></div>
         <div class="zoombox"><button class="iconbtn" data-act="zin" aria-label="Приблизить">+</button><button class="iconbtn" data-act="zout" aria-label="Отдалить">−</button><button class="iconbtn" data-act="zfit" aria-label="Вся территория">${icon('target')}</button></div>
         <div class="coords" id="xy">x — · y —</div>
-        ${state.readonly ? '<div class="readonly-banner">Режим наблюдателя: только просмотр</div>' : ''}
+        ${lockedBy ? `<div class="readonly-banner lock-banner">${icon('user')}Сейчас объект редактирует <b>${esc(lockedBy.name)}</b> — вы видите его сохранённые изменения. Править можно будет, когда он выйдет</div>`
+          : state.readonly ? '<div class="readonly-banner">Режим наблюдателя: только просмотр</div>' : ''}
         <button class="iconbtn look-exit" data-act="exitLook" hidden aria-label="Выйти из панорамы">${icon('back')}</button>
       </div>
       <section class="sheet"><div class="sheet-grip"><i></i></div><div class="sheet-body"></div></section>
@@ -78,10 +88,12 @@ export function editor(root, api, user, draft) {
   const plan = new Plan2D(svg, {
     down: (w, hit) => tools.down(w, hit), move: (w) => tools.move(w), up: (w) => tools.up(w), cancel: () => tools.cancel(),
     tap: (w, hit) => tools.tap(w, hit),
-    hover: (w) => { $('#xy').textContent = `x ${w.x.toFixed(1)} · y ${w.y.toFixed(1)} м`; tools.hover(w); },
+    hover: (w) => { state.cursor = w; $('#xy').textContent = `x ${w.x.toFixed(1)} · y ${w.y.toFixed(1)} м`; tools.hover(w); },
   });
   plan.setMap(map);
-  plan.set({ admin: true, grid: true, underlay: state.under, underlayOpacity: state.underOp, overlay: (px) => tools.overlay(px), linkFrom: () => tools.linkFrom });
+  svg.addEventListener('pointerleave', () => (state.cursor = null));
+  root.addEventListener('pointerdown', (e) => { if (!e.target.closest('#lyPop, [data-act="layers"]')) $('#lyPop', root).hidden = true; });   // вне плана Ctrl+V вставляет со сдвигом
+  plan.set({ floor: state.floor, hidden: state.hidden, admin: true, grid: true, underlay: state.under, underlayOpacity: state.underOp, overlay: (px) => tools.overlay(px), linkFrom: () => tools.linkFrom });
   requestAnimationFrame(() => plan.fitAll());
 
   // ---------- состояние сохранения ----------
@@ -89,7 +101,7 @@ export function editor(root, api, user, draft) {
   function status() {
     const el = $('#st');
     el.className = state.dirty || state.conflict ? 'dirty' : '';
-    el.innerHTML = '<i></i>' + (state.readonly ? 'Черновик · только просмотр' : state.conflict ? 'Конфликт версий — обновите' : state.saving ? 'Сохраняю…' : state.dirty ? 'Есть несохранённые изменения' : `Черновик сохранён${state.savedAt ? ' · ' + new Date(state.savedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''}`);
+    el.innerHTML = '<i></i>' + (lockedBy ? `Только просмотр · редактирует ${esc(lockedBy.name)}` : state.readonly ? 'Черновик · только просмотр' : state.conflict ? 'Конфликт версий — обновите' : state.saving ? 'Сохраняю…' : state.dirty ? 'Есть несохранённые изменения' : `Черновик сохранён${state.savedAt ? ' · ' + new Date(state.savedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''}`);
   }
   async function save() {
     if (!isEditor || !state.dirty || state.saving) return;
@@ -110,7 +122,11 @@ export function editor(root, api, user, draft) {
 
   // ---------- отрисовка ----------
   function selRef() { const s = state.sel; return !s ? null : s.type === 'sector' ? 'sec:' + s.id : s.type === 'stadium' ? null : s.id; }
-  function redraw() { state.under = underlayOf(map); plan.set({ underlay: state.under, sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); }
+  function redraw() {
+    // после отмены этаж мог исчезнуть — возвращаемся на нижний
+    if (!map.floors.some((f) => f.id === state.floor)) { state.floor = groundId(); scene?.setFloorView(map.floors.length > 1 ? state.floor : null); }
+    if ($('#floorBar')) floorBar();
+    state.under = underlayOf(map); plan.set({ floor: state.floor, underlay: state.under, sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); }
   function rebuildLater() { if (!scene) return; clearTimeout(rebuildT); rebuildT = setTimeout(() => scene.setMap(map), 450); }
   function toolbar() {
     const list = state.readonly ? [TOOLS.build[0]] : TOOLS[state.mode];
@@ -158,7 +174,7 @@ export function editor(root, api, user, draft) {
         ${k.walls ? field('Высота стен, м', num('f-height', o.height || k.height, 0.5, 2)) : ''}
         ${field('Текст для посетителей', `<textarea class="inp" id="f-desc" placeholder="Что здесь, часы работы, как пройти" ${dis()}>${esc(o.desc || '')}</textarea>`)}
         <div class="field"><span class="lbl">Фото</span>${photoBlock(o.photo, 'photo', 'Добавить фото')}</div>
-        ${state.readonly ? '' : `<div class="row">${o.cat === 'plaza' ? '' : `<button class="btn sm" data-act="dup">${icon('copy')}Дублировать</button><button class="btn sm" data-act="del">${icon('erase')}Удалить</button>`}<button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
+        ${state.readonly ? '' : `<div class="row">${o.cat === 'plaza' ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить</button>`}<button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
     } else if (s.type === 'wall') {
       h = `<div class="insp-head"><span class="glyph sm" style="background:var(--wall-line)">${icon('wall')}</span><h2>Стена</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         <div class="grid2">${field('Толщина, м', num('f-thick', o.thick || 0.2, 0.05, 0.05))}${field('Высота, м', num('f-wh', o.height || 3, 0.5, 1))}</div>
@@ -181,6 +197,10 @@ export function editor(root, api, user, draft) {
         <div class="field"><span class="lbl">Тип</span><div class="chips">${Object.entries(PCATS).map(([c, v]) => `<button class="opt" data-act="pcat" data-v="${c}" aria-pressed="${o.cat === c}" ${dis()}><span class="glyph sm" style="width:18px;height:18px;font-size:9px;background:${map.style.poi[c] || v.c}">${esc(v.g)}</span>${v.n}</button>`).join('')}</div></div>
         <div class="field"><span class="lbl">Цвет</span>${swatches(col, 'poiColor')}</div>
         <div class="grid3">${field('X, м', num('f-mx', o.x))}${field('Y, м', num('f-my', o.y))}${field('Уровень, м', num('f-mz', o.z || 0, 0.5, 0))}</div>
+        ${o.cat === 'custom' ? `<div class="field cyl-field"><span class="lbl">Панорама точки</span>
+          <span class="cap">Длинное фото по кругу на 360° (например, 2:1 с камеры 360° или склейка с телефона). Оно оборачивает цилиндр, посетитель стоит в центре и поворачивается в стороны.</span>
+          ${o.pano ? `<img class="thumb wide" src="${esc(o.pano)}" alt=""><button class="btn blue full" data-act="viewCyl">${icon('eye')}Посмотреть панораму</button>` : ''}
+          ${state.readonly ? '' : `<div class="row"><button class="btn sm${o.pano ? '' : ' primary'}" data-act="cylPano">${icon('upload')}${o.pano ? 'Заменить панораму' : 'Загрузить панораму'}</button>${o.pano ? '<button class="btn sm ghost" data-act="cylPanoRm">Убрать</button>' : ''}</div>`}</div>` : ''}
         <div class="field"><span class="lbl">Фото</span>${photoBlock(o.photo, 'photo', 'Добавить фото')}</div>
         ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="del">${icon('erase')}Удалить метку</button><button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
     } else if (s.type === 'pano') {
@@ -189,6 +209,10 @@ export function editor(root, api, user, draft) {
         ${field('Название точки', `<input class="inp" id="f-pname" value="${esc(o.name)}" ${dis()}>`)}
         <button class="btn blue full" data-act="lookPano">${icon('eye')}Посмотреть панораму</button>
         <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото.' : 'Сейчас вид строится из 3D-модели. Загрузите сферическое фото (формат 2:1) с камеры 360° или склейку с телефона.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
+        ${o.img && !state.readonly ? `<div class="field rot-field"><span class="lbl">Направление фото · ${Math.round(o.photoRot || 0)}°</span>
+          <span class="cap">Чтобы стрелки переходов указывали туда, где точка видна на фото: нажмите «Посмотреть панораму», повернитесь к месту на фото, где стоит соседняя точка, и нажмите её имя ниже.</span>
+          <div class="row"><button class="btn sm" data-act="rotPhoto" data-d="-5">↺ 5°</button><button class="btn sm" data-act="rotPhoto" data-d="5">↻ 5°</button><button class="btn sm" data-act="rotPhoto" data-d="90">↻ 90°</button></div>
+          ${nb.length ? `<div class="chips">${nb.map((q) => `<button class="opt" data-act="alignTo" data-id="${q.id}">Совместить «${esc(q.name)}»</button>`).join('')}</div>` : ''}</div>` : ''}
         ${field('Панорама Google Maps или видео YouTube', `<textarea class="inp" id="f-pembed" placeholder="Код &lt;iframe&gt; из Google Maps (Поделиться → Встраивание карты) или ссылка на видео YouTube — обычное или 360°" ${dis()}>${esc(o.embed || '')}</textarea>`)}
         ${o.embed && !mapsEmbed(o.embed) ? '<p class="cap">Не похоже на код Google Maps или ссылку YouTube — посетители увидят обычную панораму.</p>' : ''}
         <p class="cap" style="margin:0">Берите только материалы, которые можно показывать: свои съёмки или ролики, где автор разрешил встраивание.</p>
@@ -203,21 +227,25 @@ export function editor(root, api, user, draft) {
         <div class="field"><span class="lbl">Цвет сектора на схеме</span>${swatches(col, 'secColor')}${map.sectors[s.id]?.color && !state.readonly ? '<button class="txt-btn" data-act="secColorReset" style="align-self:flex-start">Как у трибуны</button>' : ''}</div>
         <button class="btn sm" data-act="show3d">${icon('cube')}Показать в 3D</button>`;
     } else if (s.type === 'stadium') { h = stadiumPanel(); }
+    if (LISTS[s.type] && !(s.type === 'shape' && o.cat === 'plaza')) h += clipRow();
     sheet.set(`<div class="insp">${h}</div>`, sheet.state === 'peek' ? 'half' : undefined);
   }
 
   function home() {
     const m = state.mode;
     if (m === 'stadium') return `<div class="insp">${stadiumPanel()}</div>`;
+    const shapesHere = map.shapes.filter((s) => s.cat !== 'plaza' && here(s)), poisHere = map.pois.filter(here), panosHere = map.panos.filter(here);
+    const fname = map.floors.length > 1 ? ` · ${esc(floorById(map, state.floor).name)}` : '';
     const list = m === 'build'
-      ? map.shapes.filter((s) => s.cat !== 'plaza').map((s) => `<button class="item" data-sel="shape:${s.id}"><span class="dot" style="background:${s.color || catColor(map, s.cat)};width:12px;height:12px"></span><span class="t"><b>${esc(s.name)}</b><span>${KINDS[s.kind]?.n || ''} · ${CATS[s.cat]?.n || ''} · ${Math.round(shapeArea(s))} м²</span></span></button>`).join('')
-      : map.pois.map((p) => `<button class="item" data-sel="poi:${p.id}"><span class="glyph sm" style="background:${poiColor(map, p)}">${esc(PCATS[p.cat]?.g || 'i')}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || PCATS[p.cat]?.n || '')}</span></span></button>`).join('')
-        + `<h3 class="h-sec" style="margin:12px 0 4px">Точки обзора</h3>` + map.panos.map((p) => `<button class="item" data-sel="pano:${p.id}"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}</span></span></button>`).join('');
+      ? shapesHere.map((s) => `<button class="item" data-sel="shape:${s.id}"><span class="dot" style="background:${s.color || catColor(map, s.cat)};width:12px;height:12px"></span><span class="t"><b>${esc(s.name)}</b><span>${KINDS[s.kind]?.n || ''} · ${CATS[s.cat]?.n || ''} · ${Math.round(shapeArea(s))} м²</span></span></button>`).join('')
+      : poisHere.map((p) => `<button class="item" data-sel="poi:${p.id}"><span class="glyph sm" style="background:${poiColor(map, p)}">${esc(PCATS[p.cat]?.g || 'i')}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || PCATS[p.cat]?.n || '')}</span></span></button>`).join('')
+        + `<h3 class="h-sec" style="margin:12px 0 4px">Точки обзора</h3>` + panosHere.map((p) => `<button class="item" data-sel="pano:${p.id}"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}</span></span></button>`).join('');
     return `<div class="insp">
       <div><h2 style="font-size:16px">${m === 'build' ? 'Построение помещений' : 'Ключевые точки и панорамы'}</h2>
       <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Сначала нарисуйте помещения инструментами слева: прямоугольник, контур, овал, стены, двери и лестницы. Потом перейдите во вкладку «Точки и панорамы».' : 'Ставьте метки (входы, кафе, туалеты), точки обзора 360° и связывайте их — по связям посетители ходят в панорамах и строят маршруты.'}</p></div>
+      ${pasteCard()}
       ${m === 'build' ? underlayBlock() : ''}
-      <h3 class="h-sec">${m === 'build' ? `Объекты · ${map.shapes.length - 1}` : `Метки · ${map.pois.length}`}</h3><div class="list">${list}</div></div>`;
+      <h3 class="h-sec">${m === 'build' ? `Объекты · ${shapesHere.length}` : `Метки · ${poisHere.length}`}${fname}</h3><div class="list">${list}</div></div>`;
   }
 
   function underlayBlock() {
@@ -230,6 +258,79 @@ export function editor(root, api, user, draft) {
       <span class="cap">Обводите схему по сетке. Подложку видят только сотрудники.</span>
       ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="underUp">${icon('image')}${own ? 'Заменить' : 'Своя подложка'}</button>${own ? '<button class="btn sm ghost" data-act="underRm">Убрать</button>' : ''}</div>`}</div>`;
   }
+  // ---------- буфер обмена: Ctrl+C / Ctrl+V / Ctrl+D ----------
+  // Хранится в браузере, поэтому объект можно скопировать в одном конструкторе и вставить в другом.
+  const LISTS = { shape: 'shapes', wall: 'walls', door: 'doors', stairs: 'stairs', poi: 'pois', pano: 'panos' };
+  const PREFIX = { shape: 's', wall: 'w', door: 'd', stairs: 'st', poi: 'm', pano: 'p' };
+  const NAMES = { shape: 'Фигура', wall: 'Стена', door: 'Проём', stairs: 'Лестница', poi: 'Метка', pano: 'Точка обзора' };
+  const CLIP = 'arena.clipboard';
+  let memClip = null, pasteN = 0;
+  const readClip = () => { try { return JSON.parse(localStorage.getItem(CLIP)) || memClip; } catch { return memClip; } };
+  function centerOf(type, o) {
+    if (type === 'shape') return shapeCenter(o);
+    if (type === 'wall') return { x: o.pts.reduce((a, p) => a + p[0], 0) / o.pts.length, y: o.pts.reduce((a, p) => a + p[1], 0) / o.pts.length };
+    if (type === 'stairs') return { x: o.x + o.w / 2, y: o.y + o.h / 2 };
+    return { x: o.x, y: o.y };
+  }
+  function shift(type, o, dx, dy) {
+    if (type === 'shape') moveShape(o, dx, dy);
+    else if (type === 'wall') o.pts = o.pts.map(([x, y]) => [x + dx, y + dy]);
+    else { o.x += dx; o.y += dy; }
+  }
+  function copySel() {
+    const s = state.sel, o = ed.find(s);
+    if (!o || !LISTS[s.type]) { toast(s ? 'Это часть стадиона — её нельзя скопировать' : 'Сначала выберите объект на плане'); return false; }
+    if (s.type === 'shape' && o.cat === 'plaza') { toast('Границу участка не копируют — она одна на объект'); return false; }
+    memClip = { type: s.type, obj: clone(o), from: venue.slug };
+    try { localStorage.setItem(CLIP, JSON.stringify(memClip)); } catch { /* только в памяти этой вкладки */ }
+    pasteN = 0; toast(`Скопировано: «${o.name || NAMES[s.type]}» — Ctrl+V, чтобы вставить`); inspector(true);
+    return true;
+  }
+  /** Вставить копию: под курсор, если он над планом, иначе со сдвигом на 3 м от оригинала (каждая следующая — дальше). */
+  function place(c, at) {
+    if (state.readonly) return toast('У наблюдателя нет прав на изменения');
+    const n = clone(c.obj), mid = centerOf(c.type, c.obj), snap = (v) => (state.snap ? Math.round(v / state.snap) * state.snap : v);
+    n.id = uid(PREFIX[c.type]);
+    // копия ложится на текущий этаж — так объект накладывается на другой этаж, а не проваливается в него
+    if (state.floor === groundId()) delete n.floor; else n.floor = state.floor;
+    if (n.name && c.type !== 'door') n.name = n.name.replace(/ \(копия( \d+)?\)$/, '') + ' (копия)';
+    pasteN++;
+    const dx = at ? snap(at.x - mid.x) : 3 * pasteN, dy = at ? snap(at.y - mid.y) : 3 * pasteN;
+    shift(c.type, n, dx, dy);
+    ed.change(() => map[LISTS[c.type]].push(n), c.from && c.from !== venue.slug ? 'Вставлено из другого объекта' : 'Вставлено');
+    if (state.mode !== 'build' && ['shape', 'wall', 'door', 'stairs'].includes(c.type)) setMode('build');
+    if (state.mode === 'build' && ['poi', 'pano'].includes(c.type)) setMode('points');
+    ed.select({ type: c.type, id: n.id });
+  }
+  function paste(at) { const c = readClip(); if (!c) return toast('Буфер пуст: выберите объект и нажмите Ctrl+C'); place(c, at); }
+  function duplicate() {
+    const s = state.sel, o = ed.find(s);
+    if (!o || !LISTS[s.type] || (s.type === 'shape' && o.cat === 'plaza')) return toast('Выберите объект, который нужно повторить');
+    pasteN = 0; place({ type: s.type, obj: clone(o), from: venue.slug });
+  }
+  const clipRow = () => `<div class="row clip-row"><button class="btn sm" data-act="copy" title="Ctrl+C">${icon('copy')}Копировать</button>${state.readonly ? '' : `<button class="btn sm" data-act="dup" title="Ctrl+D">${icon('copy')}Дублировать</button>`}
+    ${map.floors.length > 1 && !state.readonly ? `<label class="row nowrap cap">Этаж <select class="inp sm" id="f-objfloor">${floorsSorted(map).map((f) => `<option value="${f.id}" ${f.id === state.floor ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>` : ''}</div>`;
+  function pasteCard() {
+    const c = readClip(); if (!c || state.readonly) return '';
+    return `<div class="card clip-card"><span class="cap" style="margin:0">В буфере: <b>${esc(c.obj.name || NAMES[c.type])}</b>${c.from && c.from !== venue.slug ? ' · из другого объекта' : ''}</span>
+      <div class="row"><button class="btn sm dark" data-act="paste">${icon('copy')}Вставить</button><span class="cap">Ctrl+V — под курсор на плане</span></div></div>`;
+  }
+
+  // ---------- слои: что показывать в конструкторе (у каждого объекта — свой набор) ----------
+  function layersPop() {
+    $('#lyPop').innerHTML = `<b class="pop-h">Слои карты</b>${layersFor(map, true).map((l) => `<label>${l.n} <input type="checkbox" class="switch" data-layer="${l.k}" ${state.hidden.has(l.k) ? '' : 'checked'}></label>`).join('')}
+      ${state.hidden.size ? '<button class="txt-btn" data-act="layersAll" style="padding:8px">Показать все</button>' : ''}`;
+  }
+  function applyLayers() {
+    try { localStorage.setItem(layersKey, JSON.stringify([...state.hidden])); } catch { /* без памяти слоёв */ }
+    plan.set({ hidden: state.hidden }); scene?.setHidden(state.hidden);
+    // выделенный объект ушёл вместе со слоем — снимаем выделение
+    const s = state.sel, o = ed.find(s);
+    const layerOf = !o ? null : s.type === 'shape' ? shapeLayer(o) : { wall: 'walls', door: 'doors', stairs: 'stairs', poi: 'pois', pano: 'panos', sector: 'stadium' }[s.type];
+    if (layerOf && state.hidden.has(layerOf)) ed.select(null);
+    $('[data-act="layers"]', root).classList.toggle('on', state.hidden.size > 0);
+  }
+
   function uploadUnderlay() {
     const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
     inp.onchange = async () => {
@@ -257,11 +358,13 @@ export function editor(root, api, user, draft) {
 
   function panel(name) {
     state.panel = name;
-    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты' }[name]}</h2></div>`;
+    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты', floors: 'Этажи', visitors: 'Слои для посетителей' }[name]}</h2></div>`;
     if (name === 'menu') {
       const items = [
         isAdmin && ['publish', 'publish', 'Публикация', 'Выпустить черновик для посетителей'],
         ['versions', 'history', 'История версий', isAdmin ? 'Посмотреть и откатить' : 'Посмотреть'],
+        ['floors', 'layers', 'Этажи', `${map.floors.length} · добавить, переименовать, задать высоту`],
+        ['visitors', 'eye', 'Слои для посетителей', 'Что посетитель может видеть и включать'],
         ['colors', 'palette', 'Цвета карты', hasStadium() ? 'Трибуны, типы объектов и меток' : 'Типы объектов и меток'],
       ].filter(Boolean);
       const links = [
@@ -290,7 +393,37 @@ export function editor(root, api, user, draft) {
         <div class="field"><span class="lbl">Типы объектов</span>${Object.entries(CATS).filter(([c]) => c !== 'plaza').map(([c, v]) => `<div class="row nowrap" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:5px 0"><span class="row nowrap"><span class="dot" style="background:${catColor(map, c)}"></span>${v.n}</span><input type="color" data-catcolor="${c}" value="${catColor(map, c)}" ${dis()}></div>`).join('')}</div>
         <div class="field"><span class="lbl">Типы меток</span>${Object.entries(PCATS).map(([c, v]) => `<div class="row nowrap" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:5px 0"><span class="row nowrap"><span class="glyph sm" style="background:${map.style.poi[c] || v.c}">${esc(v.g)}</span>${v.n}</span><input type="color" data-poicolor="${c}" value="${map.style.poi[c] || v.c}" ${dis()}></div>`).join('')}</div>`;
     }
+    if (name === 'floors') {
+      const count = (f) => ['shapes', 'walls', 'doors', 'stairs', 'pois', 'panos'].reduce((n, k) => n + map[k].filter((o) => floorOf(o) === f.id).length, 0);
+      h += `<p class="cap" style="margin:0">Каждый этаж рисуется отдельно: объекты разных этажей не накладываются друг на друга. Нижний этаж виден бледным контуром — по нему удобно выравнивать. Лестница ведёт на этаж выше, по ней строится маршрут.</p>
+        <div class="list">${[...floorsSorted(map)].reverse().map((f, i, all) => `<div class="floor-row">
+          <span class="glyph sm mono" style="background:${f.id === state.floor ? 'var(--pano)' : 'var(--ink-3)'}">${all.length - i}</span>
+          <input class="inp" data-flname="${f.id}" value="${esc(f.name)}" aria-label="Название этажа" ${dis()}>
+          <label class="field fl-elev"><span class="lbl">Отметка, м</span><input class="inp mono" type="number" step="0.1" data-flelev="${f.id}" value="${f.elev}" ${dis()} ${f.id === groundId() ? 'disabled title="Нижний этаж — уровень земли"' : ''}></label>
+          <span class="cap">${count(f)} объектов</span>
+          ${state.readonly || f.id === groundId() ? '' : `<button class="iconbtn flat" data-act="delFloor" data-id="${f.id}" aria-label="Удалить этаж">${icon('erase')}</button>`}</div>`).join('')}</div>
+        ${state.readonly ? '' : `<button class="btn dark" data-act="addFloor">${icon('layers')}Добавить этаж сверху</button>`}`;
+    }
+    if (name === 'visitors') {
+      const opt = (k, v, n) => `<option value="${v}" ${visitorLayerMode(map, k) === v ? 'selected' : ''}>${n}</option>`;
+      h += `<p class="cap" style="margin:0">Выберите, какие слои посетитель видит на карте. «Скрыт» — не виден сразу, но посетитель может включить его в «Слоях». «Недоступен» — посетитель его не увидит совсем. Изменения увидят после публикации.</p>
+        <div class="list">${layersFor(map, false).map((l) => `<div class="item vl-row"><span class="t"><b>${l.n}</b></span>
+          <select class="inp sm" data-vl="${l.k}" ${dis()}>${opt(l.k, 'on', 'Показан')}${opt(l.k, 'off', 'Скрыт, можно включить')}${opt(l.k, 'none', 'Недоступен')}</select></div>`).join('')}</div>`;
+    }
     sheet.set(`<div class="insp">${h}</div>`, 'full');
+  }
+
+  // ---------- этажи ----------
+  function floorBar() {
+    const fs = floorsSorted(map);
+    $('#floorBar').innerHTML = fs.length < 2 && !isEditor ? '' : `<span class="cap">Этаж</span>${fs.map((f, i) => `<button data-floor="${f.id}" aria-pressed="${f.id === state.floor}" title="${esc(f.name)} · ${f.elev} м">${i + 1}</button>`).join('')}
+      <button class="fl-more" data-act="panel" data-p="floors" title="Этажи: добавить, переименовать">${fs.length < 2 ? '+ этаж' : '⋯'}</button>`;
+  }
+  function setFloor(id) {
+    state.floor = id; state.sel = null; tools.reset();
+    plan.set({ floor: id }); floorBar(); redraw(); inspector();
+    if (scene) scene.setFloorView(map.floors.length > 1 ? id : null);
+    toast(floorById(map, id).name);
   }
   async function loadVersions() {
     try {
@@ -312,17 +445,19 @@ export function editor(root, api, user, draft) {
     if (v === '3d' && !scene) {
       const { Scene3D } = await import('../core/scene3d.js');
       scene = new Scene3D(three, { onPick: pick3d });
+      scene.setHidden(state.hidden);
+      if (map.floors.length > 1) scene.topFloor = state.floor;
     }
     svg.toggleAttribute('hidden', v !== '2d'); three.hidden = v !== '3d';
     $('.zoombox', root).hidden = v !== '2d'; $('#tb').style.visibility = v === '3d' ? 'hidden' : '';
     if (scene) { scene.setActive(v === '3d'); if (v === '3d') { scene.setMap(map); if (!scene._init) { scene.overview(true); scene._init = true; } } }
     $('[data-act="view3d"]', root).style.color = v === '3d' ? 'var(--pano)' : '';
-    if (v === '2d') { $('.look-exit', root).hidden = true; plan.render(); }
+    if (v === '2d') { $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); plan.render(); }
     optbar();
   }
   function pick3d(hit) {
     if (scene.look) {
-      if (hit.type === 'arrow') { const q = map.panos.find((p) => p.id === hit.id); scene.setArrows([]); scene.glideTo(q.x, q.y, (q.z || 0) + 1.6, () => { scene.setPhoto(q.img || null); scene.setArrows(neighbors(map, q.id)); state.sel = { type: 'pano', id: q.id }; inspector(); }); }
+      if (hit.type === 'arrow') { const q = map.panos.find((p) => p.id === hit.id); scene.setArrows([]); scene.glideTo(q.x, q.y, elevOf(map, q) + (q.z || 0) + 1.6, () => { const nb = neighbors(map, q.id); scene.setArrows(nb); scene.preload(nb.map((n) => n.img)); state.sel = { type: 'pano', id: q.id }; inspector(); }, { url: q.img, rot: q.photoRot }); }
       return;
     }
     if (hit.type !== 'ref') return;
@@ -340,9 +475,13 @@ export function editor(root, api, user, draft) {
   async function lookPano() {
     const p = ed.find(state.sel); await setView('3d');
     const nb = neighbors(map, p.id);
-    scene.enterLook(p.x, p.y, (p.z || 0) + 1.6, faceOf(p, nb)); scene.setPhoto(p.img || null); scene.setArrows(nb);
+    scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, faceOf(p, nb)); scene.setPhoto(p.img || null, p.photoRot); scene.setArrows(nb); scene.preload(nb.map((n) => n.img));
     $('.look-exit', root).hidden = false;
+    // панорама Google или видео YouTube — как у посетителя, поверх 3D
+    const src = mapsEmbed(p.embed);
+    if (src) { const box = Object.assign(document.createElement('div'), { className: 'pano-embed' }); box.innerHTML = `<iframe src="${esc(src)}" title="${esc(p.name)}" allow="accelerometer; gyroscope; encrypted-media; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`; $('.canvas', root).append(box); }
   }
+  function exitLook() { if (!scene) return; scene.exitLook(); $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); }
 
   // ---------- события ----------
   const keyMap = {};
@@ -362,7 +501,8 @@ export function editor(root, api, user, draft) {
   }
 
   root.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tool],[data-mode],[data-opt],[data-act],[data-sel]'); if (!t) return;
+    const t = e.target.closest('[data-tool],[data-mode],[data-opt],[data-act],[data-sel],[data-floor]'); if (!t) return;
+    if (t.dataset.floor) return setFloor(t.dataset.floor);
     if (t.dataset.tool) return setTool(t.dataset.tool);
     if (t.dataset.mode) return setMode(t.dataset.mode);
     if (t.dataset.opt) { const k = t.dataset.opt, v = t.dataset.v; state[k] = ['snap', 'wallThick', 'doorWidth'].includes(k) ? +v : v; optbar(); return; }
@@ -371,6 +511,9 @@ export function editor(root, api, user, draft) {
     if (a === 'undo' && undo.length) { redo.push(JSON.stringify(map)); map = JSON.parse(undo.pop()); plan.setMap(map); if (!ed.find(state.sel)) state.sel = null; ed.changed(); toast('Отменено'); }
     if (a === 'redo' && redo.length) { undo.push(JSON.stringify(map)); map = JSON.parse(redo.pop()); plan.setMap(map); ed.changed(); }
     if (a === 'view3d') setView(state.view === '3d' ? '2d' : '3d');
+    if (a === 'layers') { const p = $('#lyPop'); p.hidden = !p.hidden; if (!p.hidden) layersPop(); return; }
+    if (a === 'layersAll') { state.hidden.clear(); applyLayers(); layersPop(); return; }
+    if (a === 'copy') { copySel(); return; }
     if (a === 'zin') plan.zoomAt({ x: plan.view.x + plan.view.w / 2, y: plan.view.y + plan.view.h / 2 }, 1 / 1.4);
     if (a === 'zout') plan.zoomAt({ x: plan.view.x + plan.view.w / 2, y: plan.view.y + plan.view.h / 2 }, 1.4);
     if (a === 'zfit') plan.fitAll();
@@ -380,7 +523,8 @@ export function editor(root, api, user, draft) {
     if (a === 'desel') ed.select(null);
     if (a === 'panel') panel(t.dataset.p);
     if (a === 'closePanel') { state.panel = null; inspector(); }
-    if (a === 'exitLook' && scene) { scene.exitLook(); $('.look-exit', root).hidden = true; }
+    if (a === 'exitLook') exitLook();
+    if (a === 'viewCyl' && o?.pano) { const { openCylPano } = await import('../core/cylpano.js'); openCylPano({ url: o.pano, title: o.name }); return; }
     if (state.readonly && !['panel', 'closePanel', 'reload', 'show3d', 'lookPano', 'desel'].includes(a)) return;
     if (a === 'kind') ed.change(() => { o.kind = t.dataset.v; if (KINDS[o.kind].walls && !o.height) o.height = KINDS[o.kind].height; });
     if (a === 'cat') ed.change(() => { o.cat = t.dataset.v; });
@@ -390,13 +534,41 @@ export function editor(root, api, user, draft) {
     if (a === 'shapeColorReset') ed.change(() => { delete o.color; });
     if (a === 'secColor') ed.change(() => { map.sectors[s.id] = { ...map.sectors[s.id], color: t.dataset.c }; plan.stadCache.key = null; });
     if (a === 'secColorReset') ed.change(() => { delete map.sectors[s.id].color; plan.stadCache.key = null; });
-    if (a === 'dup') { const n = { ...clone(o), id: 's' + Math.random().toString(36).slice(2, 8), name: o.name + ' (копия)' }; if (n.type === 'rect') { n.x += 3; n.y += 3; } else if (n.type === 'ellipse') { n.cx += 3; n.cy += 3; } else n.pts = n.pts.map(([x, y]) => [x + 3, y + 3]); ed.change(() => map.shapes.push(n), 'Скопировано'); ed.select({ type: 'shape', id: n.id }); }
+    if (a === 'dup') duplicate();
+    if (a === 'paste') paste(null);
     if (a === 'del') { const list = { shape: 'shapes', wall: 'walls', door: 'doors', stairs: 'stairs', poi: 'pois', pano: 'panos' }[s.type]; ed.change(() => { map[list] = map[list].filter((x) => x.id !== s.id); if (s.type === 'pano') map.links = map.links.filter((l) => !l.includes(s.id)); }, 'Удалено'); ed.select(null); }
     if (a === 'unlink') ed.change(() => { map.links = map.links.filter((l) => !(l.includes(s.id) && l.includes(t.dataset.id))); }, 'Переход убран');
     if (a === 'photo') upload((url) => (o.photo = url));
     if (a === 'photoRm') ed.change(() => delete o.photo);
+    if (a === 'rotPhoto') { ed.change(() => { o.photoRot = (((o.photoRot || 0) + +t.dataset.d) % 360 + 360) % 360; }); scene?.setPhotoRot(o.photoRot); }
+    if (a === 'alignTo') {
+      // сейчас в центре экрана то место фото, где видна соседняя точка: поворачиваем фото так, чтобы оно оказалось ровно по направлению на неё
+      const q = map.panos.find((x) => x.id === t.dataset.id);
+      if (!scene?.look || !scene.sphere) return toast('Сначала «Посмотреть панораму» и повернитесь к месту на фото, где видна эта точка', 4500);
+      const psiN = Math.atan2(q.y - o.y, q.x - o.x), phi = ((o.photoRot || 0) * Math.PI) / 180, deg = ((((scene.look.yaw + phi - psiN) * 180) / Math.PI) % 360 + 360) % 360;
+      ed.change(() => { o.photoRot = +deg.toFixed(1); }, `Фото повёрнуто: стрелка «${q.name}» совпадает с фото`);
+      scene.setPhotoRot(o.photoRot); scene.look.yaw = psiN; scene.applyLook();
+    }
+    if (a === 'cylPano') upload((url) => (o.pano = url));
+    if (a === 'cylPanoRm') ed.change(() => delete o.pano);
     if (a === 'pano360') upload((url) => (o.img = url));
     if (a === 'pano360Rm') ed.change(() => delete o.img);
+    if (a === 'addFloor') {
+      const fs = floorsSorted(map), top = fs.at(-1), nf = { id: uid('f'), name: `${fs.length + 1} этаж`, elev: +((top.elev || 0) + 4).toFixed(2) };
+      ed.change(() => { map.floors = [...map.floors, nf]; }, `Добавлен ${nf.name} на отметке ${nf.elev} м`);
+      setFloor(nf.id); panel('floors');
+    }
+    if (a === 'delFloor') {
+      const id = t.dataset.id, f = floorById(map, id);
+      if (t.dataset.sure !== '1') { t.dataset.sure = '1'; t.style.color = 'var(--accent)'; toast(`Нажмите ещё раз — удалится «${f.name}» со всем, что на нём нарисовано`); return; }
+      ed.change(() => {
+        for (const k of ['shapes', 'walls', 'doors', 'stairs', 'pois', 'panos']) map[k] = map[k].filter((o) => floorOf(o) !== id);
+        const ids = new Set(map.panos.map((p) => p.id)); map.links = map.links.filter(([p, q]) => ids.has(p) && ids.has(q));
+        map.floors = map.floors.filter((x) => x.id !== id);
+      }, `«${f.name}» удалён`);
+      if (state.floor === id) setFloor(groundId()); else floorBar();
+      panel('floors');
+    }
     if (a === 'underUp') uploadUnderlay();
     if (a === 'underRm') { ed.change(() => delete map.underlay, 'Подложка убрана'); inspector(); }
     if (a === 'show3d') focus3d();
@@ -440,6 +612,13 @@ export function editor(root, api, user, draft) {
   root.addEventListener('input', (e) => {
     const t = e.target, o = ed.find(state.sel);
     if (t.id === 'f-under') { state.underOp = +t.value; redraw(); return; }
+    if ((t.dataset.flname || t.dataset.flelev) && !state.readonly) {
+      const f = map.floors.find((x) => x.id === (t.dataset.flname || t.dataset.flelev)); if (!f) return;
+      if (!snapped) { ed.snapshot(); snapped = true; }
+      if (t.dataset.flname) f.name = t.value.slice(0, 60) || f.name;
+      else if (t.value !== '' && !Number.isNaN(+t.value)) f.elev = +t.value;
+      markDirty(); floorBar(); rebuildLater(); return;
+    }
     if (['f-uw', 'f-ux', 'f-uy'].includes(t.id) && map.underlay && !state.readonly) {
       const n = +t.value, u = map.underlay; if (t.value === '' || Number.isNaN(n)) return;
       if (!snapped) { ed.snapshot(); snapped = true; }
@@ -475,19 +654,55 @@ export function editor(root, api, user, draft) {
   root.addEventListener('change', async (e) => {
     const t = e.target;
     if (t.id === 'f-real') ed.change(() => { map.style.realSeats = t.checked; });
+    if (t.dataset.layer) { state.hidden[t.checked ? 'delete' : 'add'](t.dataset.layer); applyLayers(); layersPop(); }
+    if (t.dataset.vl && !state.readonly) { const k = t.dataset.vl, v = t.value; ed.change(() => { if (v === 'on') delete map.visitorLayers[k]; else map.visitorLayers[k] = v; }, 'Сохранено — посетители увидят после публикации'); }
+    if (t.id === 'f-objfloor' && !state.readonly) {
+      const s = state.sel, o = ed.find(s), v = t.value;
+      ed.change(() => { if (v === groundId()) delete o.floor; else o.floor = v; }, `Перенесено: ${floorById(map, v).name}`);
+      setFloor(v); ed.select(s);
+    }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.target.closest('input, textarea, select')) return;
+    if (e.target.closest?.('input, textarea, select')) return;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); $(`[data-act="${e.shiftKey ? 'redo' : 'undo'}"]`, root).click(); return; }
-    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
-    if (e.key === 'Escape') { if (scene?.look) { scene.exitLook(); $('.look-exit', root).hidden = true; } else if (tools.busy()) tools.escape(); else ed.select(null); return; }
+    // буква клавиши по её месту, а не по раскладке: Ctrl+C работает и в русской раскладке (там это «с»)
+    const key = e.code?.startsWith('Key') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+    if (mod && key === 'z') { e.preventDefault(); $(`[data-act="${e.shiftKey ? 'redo' : 'undo'}"]`, root).click(); return; }
+    if (mod && key === 'y') { e.preventDefault(); $('[data-act="redo"]', root).click(); return; }
+    if (mod && key === 's') { e.preventDefault(); save(); return; }
+    if (mod && key === 'c') { if (window.getSelection()?.toString()) return; e.preventDefault(); copySel(); return; }
+    if (mod && key === 'x') { e.preventDefault(); if (copySel()) $('[data-act="del"]', root)?.click(); return; }
+    if (mod && key === 'v') { e.preventDefault(); paste(state.view === '2d' ? state.cursor : null); return; }
+    if (mod && key === 'd') { e.preventDefault(); duplicate(); return; }
+    if (e.key === 'Escape') { if (scene?.look) exitLook(); else if (tools.busy()) tools.escape(); else ed.select(null); return; }
     if (e.key === 'Enter' && tools.busy()) { tools.finish(); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && state.sel && !state.readonly && state.sel.type !== 'sector') { $('[data-act="del"]', root)?.click(); return; }
-    const t = keyMap[e.key.toLowerCase()];
-    if (t && !mod && !state.readonly && TOOLS[state.mode].some((x) => x.id === t)) setTool(t);
+    const t = keyMap[key];
+    if (t && !mod && !e.altKey && !state.readonly && TOOLS[state.mode].some((x) => x.id === t)) setTool(t);
   }, { signal: window.__ac?.signal });
   window.addEventListener('beforeunload', (e) => { if (state.dirty && isEditor) { save(); e.preventDefault(); } }, { signal: window.__ac?.signal });
 
-  toolbar(); optbar(); status(); inspector();
+  // ---------- совместная работа: один редактор, остальные видят его сохранения ----------
+  const timers = [];
+  window.__ac?.signal.addEventListener('abort', () => timers.forEach(clearInterval));
+  if (isEditor && !lockedBy) {
+    // держим замок, пока открыт конструктор; потеряли (долго не было сети) — переходим в просмотр
+    timers.push(setInterval(async () => {
+      const r = await api.lock().catch(() => null);
+      if (r && !r.mine) { toast(`Объект перехватил ${r.holder?.name || 'другой админ'} — открываю для просмотра`, 5000); setTimeout(() => location.reload(), 1500); }
+    }, 15000));
+    window.addEventListener('pagehide', () => { if (state.dirty) save(); api.unlock(); }, { signal: window.__ac?.signal });
+  } else {
+    // занято или роль наблюдателя: раз в 5 с подтягиваем свежие сохранения, а освободился объект — забираем его
+    timers.push(setInterval(async () => {
+      if (lockedBy) {
+        const r = await api.lock().catch(() => null);
+        if (r?.mine) { toast('Объект освободился — открываю для редактирования', 3000); setTimeout(() => location.reload(), 900); return; }
+      }
+      const rev = await api.revision().catch(() => null);
+      if (rev && rev !== state.rev) { const keep = state.floor; await reloadDraft(); state.floor = map.floors.some((f) => f.id === keep) ? keep : groundId(); redraw(); toast(`Обновлено: новые сохранения${lockedBy ? ' · ' + lockedBy.name : ''}`); }
+    }, 5000));
+  }
+
+  toolbar(); optbar(); status(); inspector(); floorBar();
 }

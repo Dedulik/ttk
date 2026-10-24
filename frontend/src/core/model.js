@@ -36,7 +36,29 @@ export const PCATS = {
   ticket: { n: 'Кассы', g: '₽', c: '#8a5bd1' },
   transport: { n: 'Транспорт', g: 'Т', c: '#2e9e4f' },
   meet: { n: 'Место встречи', g: '★', c: '#3b3f46' },
+  // своя точка: админ прикрепляет к ней длинное фото-панораму, посетитель смотрит её изнутри цилиндра
+  custom: { n: 'Своя точка', g: '◎', c: '#0e9f8e' },
 };
+
+/** Слои карты, которые можно скрывать — в конструкторе любого объекта и у посетителя. */
+export const LAYERS = [
+  { k: 'underlay', n: 'Подложка', admin: true },
+  { k: 'grid', n: 'Сетка', admin: true },
+  { k: 'rooms', n: 'Здания и помещения' },
+  { k: 'zones', n: 'Зоны и площадки' },
+  { k: 'walls', n: 'Отдельные стены' },
+  { k: 'doors', n: 'Двери и проёмы', admin: true },
+  { k: 'stairs', n: 'Лестницы' },
+  { k: 'stadium', n: 'Чаша стадиона', stadium: true },
+  { k: 'roof', n: 'Крыша стадиона', stadium: true },
+  { k: 'pois', n: 'Метки' },
+  { k: 'panos', n: 'Точки панорам' },
+  { k: 'labels', n: 'Подписи' },
+];
+/** Какие слои показать в панели для этой карты. */
+export const layersFor = (map, admin) => LAYERS.filter((l) => (!l.admin || admin) && (!l.stadium || map.stadium));
+/** Чей это слой: фигура со стенами — «здания», без — «зоны», граница участка — всегда видна. */
+export const shapeLayer = (s) => (s.cat === 'plaza' ? null : kindOf(s).walls ? 'rooms' : 'zones');
 
 export const PALETTE = ['#e3242b', '#c8323a', '#cf2f63', '#b937b9', '#8a5bd1', '#2c5cc5', '#2f6fe0', '#3d7be0', '#4fb8dc', '#2e9e4f', '#77b96f', '#d9a400', '#ef8a3c', '#8d939a', '#3b3f46'];
 
@@ -52,9 +74,27 @@ export function normalize(m) {
   map.style = Object.assign({ cats: {}, stands: {}, poi: {}, realSeats: true }, map.style || {});
   // stadium: null — объект без чаши стадиона (собран в конструкторе с пустого плана)
   if (map.stadium !== null) map.stadium = map.stadium || { cx: 333.5, cy: 248.5 };
+  map.floors = Array.isArray(map.floors) && map.floors.length ? map.floors : [{ id: 'f0', name: 'Первый этаж', elev: 0 }];
+  map.visitorLayers = map.visitorLayers || {};
   map.version = 2;
   return map;
 }
+
+// ---------- этажи ----------
+// У каждого объекта карты есть поле floor (id этажа, по умолчанию 'f0'). Этаж — { id, name, elev }:
+// elev — высота пола над землёй, м. Объекты разных этажей не мешают друг другу: в 2D виден текущий этаж,
+// в 3D этажи стоят друг над другом. Лестница на этаже ведёт на следующий этаж вверх.
+export const floorOf = (o) => o?.floor || 'f0';
+export const floorsSorted = (map) => [...map.floors].sort((a, b) => a.elev - b.elev);
+export const floorById = (map, id) => map.floors.find((f) => f.id === id) || floorsSorted(map)[0];
+export const elevOf = (map, o) => floorById(map, floorOf(o)).elev || 0;
+/** Этаж непосредственно выше / ниже (или null). */
+export function floorStep(map, id, dir) {
+  const fs = floorsSorted(map), i = fs.findIndex((f) => f.id === id);
+  return fs[i + dir] || null;
+}
+/** Режим слоя для посетителей, который выбрал админ: 'on' — показан, 'off' — скрыт, но можно включить, 'none' — недоступен. */
+export const visitorLayerMode = (map, k) => map.visitorLayers?.[k] || 'on';
 
 /** Рамка всего, что есть на карте: для «показать всё» в 2D и центра 3D-сцены. */
 export function mapBox(map) {
@@ -132,17 +172,21 @@ function cutSegment(a, b, doors) {
   const lerp = (u) => [a[0] + ((b[0] - a[0]) * u) / L, a[1] + ((b[1] - a[1]) * u) / L];
   return out.map(([u0, u1]) => [lerp(u0), lerp(u1)]);
 }
-/** Все отрезки стен карты (контуры зданий/помещений и свободные стены) с вырезанными дверями. */
-export function wallSegments(map) {
-  const segs = [];
+/** Все отрезки стен карты (контуры зданий/помещений и свободные стены) с вырезанными дверями.
+ *  floor — только этого этажа; двери режут только стены своего этажа. */
+export function wallSegments(map, floor) {
+  const segs = [], doorsOf = {};
+  const doors = (f) => (doorsOf[f] ||= map.doors.filter((d) => floorOf(d) === f));
   for (const s of map.shapes) {
-    const k = kindOf(s);
-    if (!k.walls) continue;
+    const k = kindOf(s), f = floorOf(s);
+    if (!k.walls || (floor && f !== floor)) continue;
     const pts = shapePoints(s, 40), h = s.height || k.height, t = s.kind === 'building' ? 0.4 : 0.2;
-    pts.forEach((p, i) => { for (const [a, b] of cutSegment(p, pts[(i + 1) % pts.length], map.doors)) segs.push({ a, b, h, t, owner: s.id, color: s.color }); });
+    pts.forEach((p, i) => { for (const [a, b] of cutSegment(p, pts[(i + 1) % pts.length], doors(f))) segs.push({ a, b, h, t, owner: s.id, color: s.color, floor: f }); });
   }
   for (const w of map.walls) {
-    for (let i = 0; i < w.pts.length - 1; i++) for (const [a, b] of cutSegment(w.pts[i], w.pts[i + 1], map.doors)) segs.push({ a, b, h: w.height || 3, t: w.thick || 0.2, owner: w.id, color: w.color });
+    const f = floorOf(w);
+    if (floor && f !== floor) continue;
+    for (let i = 0; i < w.pts.length - 1; i++) for (const [a, b] of cutSegment(w.pts[i], w.pts[i + 1], doors(f))) segs.push({ a, b, h: w.height || 3, t: w.thick || 0.2, owner: w.id, color: w.color, floor: f });
   }
   return segs;
 }
@@ -176,21 +220,23 @@ export function route(map, from, to) {
   const r = panoRoute(map, from, to);
   if (r) return r;
   const pts = walkPath(map, from, to);
-  return pts ? finish(pts.map(([x, y]) => [x, y, 0]), []) : null;
+  return pts ? finish(pts, []) : null;
 }
 function finish(pts, nodes) {
   let len = 0;
   for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
   return { pts, len, nodes, minutes: Math.max(1, Math.round(len / 1.2 / 60)) };
 }
+const panoZ = (map, p) => elevOf(map, p) + (p.z || 0);
 function leg(map, a, b) {
-  const p = walkPath(map, a, b) || [[a.x, a.y], [b.x, b.y]];
-  return p.map(([x, y], i) => [x, y, i === p.length - 1 ? b.z || 0 : a.z || 0]);
+  const p = walkPath(map, a, b) || [[a.x, a.y, a.z || 0], [b.x, b.y, b.z || 0]];
+  return p.map(([x, y, z], i) => [x, y, i === p.length - 1 ? b.z ?? z : i === 0 ? a.z ?? z : z]);
 }
 function panoRoute(map, from, to) {
-  // точки без переходов (например, отдельная панорама на поле) в маршрут не попадают
+  // точки без переходов (например, отдельная панорама на поле) в маршрут не попадают; сначала ищем на своём этаже
   const linked = (p) => map.links.some((l) => l.includes(p.id));
-  const a = nearestPano(map, from, linked), b = nearestPano(map, to, linked);
+  const near = (pt) => nearestPano(map, pt, (p) => linked(p) && floorOf(p) === (pt.floor || 'f0')) || nearestPano(map, pt, linked);
+  const a = near(from), b = near(to);
   if (!a || !b) return null;
   // если цель ближе, чем точки обзора, панорамы не нужны
   if (a.id === b.id && dist(from, to) < dist(from, a) + dist(a, to) * 0.5) return null;
@@ -204,14 +250,16 @@ function panoRoute(map, from, to) {
     if (u === b.id) break;
     const pu = map.panos.find((p) => p.id === u);
     // подъём на другой уровень (галерея, лестница) «стоит» 6 м пути за метр высоты — по земле удобнее
-    for (const q of neighbors(map, u)) { const nd = D.get(u) + dist(pu, q) + 6 * Math.abs((q.z || 0) - (pu.z || 0)); if (nd < D.get(q.id)) { D.set(q.id, nd); prev.set(q.id, u); } }
+    for (const q of neighbors(map, u)) { const nd = D.get(u) + dist(pu, q) + 6 * Math.abs(panoZ(map, q) - panoZ(map, pu)); if (nd < D.get(q.id)) { D.set(q.id, nd); prev.set(q.id, u); } }
   }
   if (D.get(b.id) === Infinity) return null;
   const chain = [b.id];
   while (chain[0] !== a.id) chain.unshift(prev.get(chain[0]));
   const nodes = chain.map((id) => map.panos.find((p) => p.id === id));
-  const first = nodes[0], last = nodes.at(-1);
-  const pts = [...leg(map, from, first), ...nodes.slice(1, -1).map((p) => [p.x, p.y, p.z || 0]), ...(nodes.length > 1 ? leg(map, last, to) : leg(map, first, to).slice(1))];
+  // переход между точками обзора админ мог провести через стену — идём по нему пешком, в обход стен и через проёмы
+  const at = (p) => ({ x: p.x, y: p.y, z: panoZ(map, p), floor: floorOf(p) }), stops = [from, ...nodes.map(at), to];
+  const pts = leg(map, stops[0], stops[1]);
+  for (let i = 2; i < stops.length; i++) pts.push(...leg(map, stops[i - 1], stops[i]).slice(1));
   return finish(pts, nodes);
 }
 
@@ -225,12 +273,15 @@ export function placeOf(map, ref) {
     const m = secMid(s);
     return { ref, type: 'sector', id: s.id, name: `Сектор ${s.id}`, sub: `${STANDS[s.stand].n} · ${s.tier === 'lower' ? 'нижний' : 'верхний'} ярус`, x: m.xy[0], y: m.xy[1], obj: s, color: sectorColor(map, s), text: map.sectors[s.id]?.text || '' };
   }
+  // у мест на этажах: floor — этаж, z — высота над землёй; в подписи — название этажа, если их несколько
+  const fl = (o) => ({ floor: floorOf(o), z: elevOf(map, o) + (o.z || 0) });
+  const fsub = (o, s) => (map.floors.length > 1 ? `${s} · ${floorById(map, floorOf(o)).name}` : s);
   const p = map.pois.find((x) => x.id === ref);
-  if (p) return { ref, type: 'poi', id: p.id, name: p.name, sub: (PCATS[p.cat] || PCATS.info).n, x: p.x, y: p.y, z: p.z || 0, obj: p, color: poiColor(map, p), text: p.text, photo: p.photo };
+  if (p) return { ref, type: 'poi', id: p.id, name: p.name, sub: fsub(p, (PCATS[p.cat] || PCATS.info).n), x: p.x, y: p.y, ...fl(p), obj: p, color: poiColor(map, p), text: p.text, photo: p.photo };
   const s = map.shapes.find((x) => x.id === ref);
-  if (s) { const c = shapeCenter(s); return { ref, type: 'shape', id: s.id, name: s.name, sub: (CATS[s.cat] || CATS.building).n, x: c.x, y: c.y, obj: s, color: shapeColor(map, s), text: s.desc, photo: s.photo }; }
+  if (s) { const c = shapeCenter(s); return { ref, type: 'shape', id: s.id, name: s.name, sub: fsub(s, (CATS[s.cat] || CATS.building).n), x: c.x, y: c.y, ...fl(s), obj: s, color: shapeColor(map, s), text: s.desc, photo: s.photo }; }
   const pn = map.panos.find((x) => x.id === ref);
-  if (pn) return { ref, type: 'pano', id: pn.id, name: pn.name, sub: 'Точка обзора 360°', x: pn.x, y: pn.y, z: pn.z || 0, obj: pn, color: '#2f6fe0', text: '' };
+  if (pn) return { ref, type: 'pano', id: pn.id, name: pn.name, sub: fsub(pn, 'Точка обзора 360°'), x: pn.x, y: pn.y, ...fl(pn), obj: pn, color: '#2f6fe0', text: '' };
   if (ref === 'stadium' && map.stadium) return { ref, type: 'stadium', id: 'stadium', name: 'Стадион «Ростов Арена»', sub: 'Поле 105 × 68 м · 4 трибуны · 2 яруса', x: map.stadium.cx, y: map.stadium.cy };
   return null;
 }

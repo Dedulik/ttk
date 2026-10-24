@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS uploads (
   uploaded_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL
 );
+-- кто сейчас редактирует объект: один редактор за раз, замок продлевается раз в 15 с и истекает через 2 мин тишины
+CREATE TABLE IF NOT EXISTS venue_locks (
+  venue_id INTEGER PRIMARY KEY REFERENCES venues(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  since TEXT NOT NULL,
+  seen TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_events (
   id INTEGER PRIMARY KEY,
   user_id INTEGER REFERENCES users(id),

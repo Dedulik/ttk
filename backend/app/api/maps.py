@@ -2,6 +2,7 @@
 черновик (для сотрудников), публикация и история."""
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, current_app, g, request
@@ -36,6 +37,30 @@ def blank_map(name: str, w: float, h: float) -> dict:
     }
 
 
+LOCK_TTL = 120   # секунд без продления — и замок считается брошенным (вкладку закрыли аварийно, пропала сеть).
+# С запасом: фоновые вкладки браузер будит раз в минуту. При обычном выходе замок снимается сразу.
+
+
+def active_lock(v):
+    """Действующий замок объекта или None."""
+    lk = one("SELECT l.*, u.name, u.email FROM venue_locks l JOIN users u ON u.id = l.user_id WHERE l.venue_id = ?", v["id"])
+    if not lk:
+        return None
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(lk["seen"])).total_seconds()
+    return lk if age < LOCK_TTL else None
+
+
+def lock_out(lk) -> dict | None:
+    return {"user_id": lk["user_id"], "name": lk["name"] or lk["email"], "since": lk["since"]} if lk else None
+
+
+def require_free(v):
+    """Менять черновик может только тот, кто держит замок (или если замка нет)."""
+    lk = active_lock(v)
+    if lk and lk["user_id"] != g.user["id"]:
+        raise ApiError(423, f"Сейчас объект редактирует {lk['name'] or lk['email']}. Изменения можно будет вносить, когда он выйдет из конструктора")
+
+
 def venue_out(v, staff: bool) -> dict:
     pub = one("SELECT number, published_at FROM map_versions WHERE venue_id = ? ORDER BY number DESC LIMIT 1", v["id"])
     owner = one("SELECT name, email, handle FROM users WHERE id = ?", v["created_by"]) if v["created_by"] else None
@@ -45,7 +70,7 @@ def venue_out(v, staff: bool) -> dict:
     if staff:
         d = one("SELECT revision, updated_at, updated_by FROM map_drafts WHERE venue_id = ?", v["id"])
         out.update(created_at=v["created_at"], created_by=who(v["created_by"]), revision=d["revision"] if d else None,
-                   updated_at=d["updated_at"] if d else None, updated_by=who(d["updated_by"]) if d else None)
+                   updated_at=d["updated_at"] if d else None, updated_by=who(d["updated_by"]) if d else None, lock=lock_out(active_lock(v)))
     return out
 
 
@@ -165,7 +190,7 @@ def delete_venue(slug):
         raise ApiError(400, "Нельзя удалить единственный объект")
     if str((request.get_json(silent=True) or {}).get("confirm", "")) != slug:
         raise ApiError(422, "Для удаления подтвердите адрес объекта")
-    for table in ("map_drafts", "map_versions"):
+    for table in ("map_drafts", "map_versions", "venue_locks"):
         run(f"DELETE FROM {table} WHERE venue_id = ?", v["id"])
     run("DELETE FROM venues WHERE id = ?", v["id"])
     audit(g.user["id"], "venue_delete", f"{slug} ({v['name']})")
@@ -190,10 +215,37 @@ def get_draft(slug):
     return {**draft_out(one("SELECT * FROM map_drafts WHERE venue_id = ?", v["id"])), "venue": venue_out(v, True)}
 
 
+@bp.post("/<slug>/lock")
+@require_role("editor")
+def take_lock(slug):
+    """Войти в конструктор: взять или продлить замок. Если объект занят — вернуть, кто его редактирует."""
+    v, lk = venue(slug), None
+    lk = active_lock(v)
+    if lk and lk["user_id"] != g.user["id"]:
+        return {"mine": False, "holder": lock_out(lk)}
+    since = lk["since"] if lk else now()
+    run("INSERT INTO venue_locks (venue_id, user_id, since, seen) VALUES (?,?,?,?) ON CONFLICT(venue_id) DO UPDATE SET user_id = excluded.user_id, since = excluded.since, seen = excluded.seen",
+        v["id"], g.user["id"], since, now())
+    if not lk:
+        audit(g.user["id"], "edit_start", slug)
+    get_db().commit()
+    return {"mine": True, "holder": lock_out(active_lock(v))}
+
+
+@bp.delete("/<slug>/lock")
+@require_role("editor")
+def drop_lock(slug):
+    v = venue(slug)
+    run("DELETE FROM venue_locks WHERE venue_id = ? AND user_id = ?", v["id"], g.user["id"])
+    get_db().commit()
+    return "", 204
+
+
 @bp.put("/<slug>/draft")
 @require_role("editor")
 def save_draft(slug):
     v = venue(slug)
+    require_free(v)
     body = request.get_json(silent=True) or {}
     d = one("SELECT * FROM map_drafts WHERE venue_id = ?", v["id"])
     if body.get("base_revision") != d["revision"]:
@@ -208,6 +260,7 @@ def save_draft(slug):
 @require_role("admin")
 def publish(slug):
     v = venue(slug)
+    require_free(v)
     comment = str((request.get_json(silent=True) or {}).get("comment", ""))[:300]
     d = one("SELECT * FROM map_drafts WHERE venue_id = ?", v["id"])
     num = (one("SELECT MAX(number) AS n FROM map_versions WHERE venue_id = ?", v["id"])["n"] or 0) + 1
@@ -231,6 +284,7 @@ def versions(slug):
 def restore(slug, version_id):
     """Копирует старую версию в черновик. Посетители увидят её после публикации."""
     v = venue(slug)
+    require_free(v)
     ver = one("SELECT * FROM map_versions WHERE id = ? AND venue_id = ?", version_id, v["id"])
     if not ver:
         raise ApiError(404, "Версия не найдена")

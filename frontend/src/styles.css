@@ -113,6 +113,8 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .pop { position: absolute; z-index: 30; right: calc(58px + var(--safe-r)); top: calc(66px + var(--safe-t)); background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; min-width: 220px; }
 .pop label { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 8px; font-size: 14px; border-radius: 8px; }
 .pop label:hover { background: var(--surface-2); }
+.pop-h { font-size: 12px; font-weight: 600; color: var(--ink-3); padding: 6px 8px 2px; }
+.pop { max-height: calc(100% - 80px); overflow-y: auto; }
 .switch { appearance: none; width: 36px; height: 22px; border-radius: 11px; background: var(--line); position: relative; transition: background .2s; flex: none; cursor: pointer; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); transition: transform .2s; }
 .switch:checked { background: var(--ok); }
@@ -167,6 +169,14 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .look-hint { position: absolute; left: 50%; bottom: calc(60px + var(--safe-b)); transform: translateX(-50%); background: rgba(18, 19, 22, .7); color: #fff; font-size: 12px; padding: 6px 10px; border-radius: 8px; white-space: nowrap; transition: opacity .4s; }
 .pano-embed { position: absolute; inset: 0; z-index: 35; background: #121316; }
 .pano-embed iframe { width: 100%; height: 100%; border: 0; display: block; }
+/* цилиндрическая панорама своей точки */
+.cyl { position: fixed; inset: 0; z-index: 90; background: #0d0e10; }
+.cyl canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.cyl canvas:active { cursor: grabbing; }
+.cyl-top { position: absolute; top: calc(10px + var(--safe-t)); left: calc(10px + var(--safe-l)); right: calc(10px + var(--safe-r)); display: flex; gap: 8px; align-items: center; }
+.cyl-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 14px; opacity: .8; }
+.cyl-zoom { position: absolute; right: calc(10px + var(--safe-r)); bottom: calc(14px + var(--safe-b)); display: flex; flex-direction: column; gap: 8px; }
+.cyl-zoom .iconbtn { font-size: 20px; font-weight: 600; }
 /* ---------- вход и панель сотрудников ---------- */
 .login { height: 100%; display: grid; place-items: center; padding: 20px; overflow: auto; }
 .login form { width: min(380px, 100%); display: flex; flex-direction: column; gap: 14px; background: var(--surface); padding: 22px; border-radius: 16px; box-shadow: var(--shadow); }
@@ -209,7 +219,28 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .zoombox .iconbtn { width: 36px; height: 36px; font-size: 18px; font-weight: 600; }
 .coords { position: absolute; left: 8px; bottom: 8px; z-index: 11; font: 11.5px var(--mono); color: var(--ink-2); background: var(--surface); padding: 4px 8px; border-radius: 7px; box-shadow: var(--shadow); display: none; }
 .readonly-banner { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 11; background: var(--ink); color: var(--surface); font-size: 12.5px; padding: 6px 10px; border-radius: 8px; white-space: nowrap; }
-.look-exit { position: absolute; left: 8px; top: 8px; z-index: 13; }
+.look-exit { position: absolute; left: 8px; top: 8px; z-index: 40; }
+.lock-banner { display: flex; gap: 8px; align-items: center; white-space: normal; max-width: min(92%, 640px); background: var(--warn); color: #fff; line-height: 1.35; }
+.lock-banner .ic { width: 16px; height: 16px; }
+.appbar .iconbtn.on { color: var(--pano); background: var(--surface-2); }
+.layers-pop { top: 64px; right: 52px; }
+.clip-row { padding-top: 4px; border-top: 1px solid var(--line); }
+/* этажи в конструкторе */
+.floor-bar { display: flex; align-items: center; gap: 3px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--line); flex: none; }
+.floor-bar .cap { margin-right: 4px; }
+.floor-bar button { border: 1px solid var(--line); background: var(--surface); min-width: 30px; height: 30px; padding: 0 8px; border-radius: 8px; font: 600 13px var(--mono); color: var(--ink-2); }
+.floor-bar button[aria-pressed="true"] { background: var(--pano); border-color: var(--pano); color: #fff; }
+.floor-bar .fl-more { font-family: var(--font); font-weight: 500; }
+.floor-row { display: grid; grid-template-columns: auto 1fr 96px auto auto; gap: 8px; align-items: end; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.floor-row .cap { align-self: center; white-space: nowrap; }
+.fl-elev .lbl { font-size: 11px; }
+.vl-row select { max-width: 200px; }
+/* этажи у посетителя */
+.floor-pick { position: absolute; z-index: 15; left: calc(10px + var(--safe-l)); top: calc(66px + var(--safe-t)); display: flex; flex-direction: column; gap: 4px; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); padding: 4px; }
+@media (min-width: 900px) { .floor-pick { left: auto; right: calc(60px + var(--safe-r)); } }
+.floor-pick button { width: 40px; height: 36px; border: 0; border-radius: 8px; background: none; font: 700 14px var(--mono); color: var(--ink-2); }
+.floor-pick button[aria-pressed="true"] { background: var(--pano); color: #fff; }
+.clip-card { gap: 6px; padding: 10px 12px; }
 @media (min-width: 900px) {
   .workspace { grid-template-columns: 74px minmax(0, 1fr) 340px; grid-template-rows: minmax(0, 1fr); grid-template-areas: "tools canvas sheet"; }
   .toolbar { flex-direction: column; border-top: 0; border-right: 1px solid var(--line); padding: 8px; overflow-y: auto; align-items: center; }
@@ -228,6 +259,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 .sw[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink); }
 input[type="color"] { width: 36px; height: 30px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--surface); }
 .thumb { width: 100%; height: 140px; object-fit: cover; border-radius: 10px; display: block; }
+.thumb.wide { height: auto; aspect-ratio: 2 / 1; }
 .card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 0; }
 .kv dt { color: var(--ink-2); }

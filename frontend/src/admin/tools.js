@@ -2,7 +2,7 @@
 //   Построение: выбор, прямоугольник, многоугольник, эллипс, стена, дверь, лестница, ластик.
 //   Точки:      выбор, метка, панорама, связь, ластик.
 // Каждый инструмент получает касания от Plan2D (down/move/up/tap/hover) и рисует свой слой поверх плана.
-import { KINDS, clone, kindOf, moveShape, shapeBox, shapePoints, uid } from '../core/model.js';
+import { KINDS, clone, floorById, floorOf, floorStep, floorsSorted, kindOf, moveShape, shapeBox, shapePoints, uid } from '../core/model.js';
 import { esc } from '../core/ui.js';
 
 export const TOOLS = {
@@ -49,6 +49,9 @@ export function createTools(ed) {
   const P = (w) => [sn(w.x), sn(w.y)];
   const map = () => ed.map;
   const same = (a, b) => a && b && a.type === b.type && a.id === b.id;
+  // всё новое рисуется на текущем этаже; на первом этаже поле floor не пишем — так карта совместима со старыми
+  const fl = () => (st().floor && st().floor !== floorsSorted(map())[0].id ? { floor: st().floor } : {});
+  const here = (o) => floorOf(o) === (st().floor || floorsSorted(map())[0].id);
 
   function selOf(hit) {
     if (!hit) return null;
@@ -62,7 +65,7 @@ export function createTools(ed) {
 
   function createShape(type, geom) {
     const kind = st().newKind, m = map();
-    const s = { id: uid('s'), type, kind, cat: DEF_CAT[kind], name: nextName(KINDS[kind].n, m.shapes.filter((x) => x.kind === kind)), desc: '', ...geom };
+    const s = { id: uid('s'), type, kind, cat: DEF_CAT[kind], name: nextName(KINDS[kind].n, m.shapes.filter((x) => x.kind === kind)), desc: '', ...geom, ...fl() };
     if (KINDS[kind].walls) s.height = KINDS[kind].height;
     ed.change(() => m.shapes.push(s), 'Фигура добавлена');
     ed.select({ type: 'shape', id: s.id });
@@ -74,7 +77,7 @@ export function createTools(ed) {
   }
   function finishWall() {
     if (T.wall && T.wall.length >= 2) {
-      const w = { id: uid('w'), pts: T.wall, thick: st().wallThick, height: 3 };
+      const w = { id: uid('w'), pts: T.wall, thick: st().wallThick, height: 3, ...fl() };
       ed.change(() => map().walls.push(w), 'Стена добавлена'); ed.select({ type: 'wall', id: w.id });
     }
     T.wall = null; ed.redraw(); ed.refreshOpt();
@@ -86,16 +89,16 @@ export function createTools(ed) {
       const x = a[0] + t * dx, y = a[1] + t * dy, d = Math.hypot(w.x - x, w.y - y);
       if (!best || d < best.d) best = { d, x, y };
     };
-    for (const s of map().shapes) if (kindOf(s).walls) { const p = shapePoints(s, 40); p.forEach((q, i) => test(q, p[(i + 1) % p.length])); }
-    for (const wl of map().walls) for (let i = 0; i < wl.pts.length - 1; i++) test(wl.pts[i], wl.pts[i + 1]);
-    if (!best || best.d > Math.max(3, 24 * ed.plan.px)) return ed.toast('Нажмите ближе к стене здания, помещения или к отдельной стене');
-    const d = { id: uid('d'), x: Math.round(best.x * 10) / 10, y: Math.round(best.y * 10) / 10, w: st().doorWidth };
+    for (const s of map().shapes) if (kindOf(s).walls && here(s)) { const p = shapePoints(s, 40); p.forEach((q, i) => test(q, p[(i + 1) % p.length])); }
+    for (const wl of map().walls) if (here(wl)) for (let i = 0; i < wl.pts.length - 1; i++) test(wl.pts[i], wl.pts[i + 1]);
+    if (!best || best.d > Math.max(3, 24 * ed.plan.px)) return ed.toast('Нажмите ближе к стене здания, помещения или к отдельной стене этого этажа');
+    const d = { id: uid('d'), x: Math.round(best.x * 10) / 10, y: Math.round(best.y * 10) / 10, w: st().doorWidth, ...fl() };
     ed.change(() => map().doors.push(d), 'Проём добавлен'); ed.select({ type: 'door', id: d.id });
   }
   function addPano(w) {
-    const m = map(), p = { id: uid('p'), name: nextName('Точка', m.panos), x: sn(w.x), y: sn(w.y) };
+    const m = map(), p = { id: uid('p'), name: nextName('Точка', m.panos), x: sn(w.x), y: sn(w.y), ...fl() };
     const cur = st().sel?.type === 'pano' ? m.panos.find((x) => x.id === st().sel.id) : null;
-    const base = cur || [...m.panos].sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))[0];
+    const base = cur || [...m.panos.filter(here)].sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))[0];
     ed.change(() => { m.panos.push(p); if (base && Math.hypot(base.x - p.x, base.y - p.y) < 150) m.links.push([base.id, p.id]); });
     ed.toast(base && Math.hypot(base.x - p.x, base.y - p.y) < 150 ? `Связана с «${base.name}»` : 'Точка обзора добавлена');
     ed.select({ type: 'pano', id: p.id });
@@ -166,7 +169,9 @@ export function createTools(ed) {
         if (d.tool === 'ellipse') { if (tiny) createShape('ellipse', { cx: d.x0, cy: d.y0, rx: 4, ry: 4 }); else createShape('ellipse', { cx: x + w / 2, cy: y + h / 2, rx: w / 2, ry: h / 2 }); }
         if (d.tool === 'stairs') {
           if (tiny) { w = st().stairDir === 'x' ? 6 : 3; h = st().stairDir === 'x' ? 3 : 6; x = d.x0 - w / 2; y = d.y0 - h / 2; }
-          const s = { id: uid('st'), x, y, w, h, dir: st().stairDir, rise: 3 };
+          // лестница поднимается ровно на следующий этаж, если он есть
+          const cf = st().floor || floorsSorted(map())[0].id, next = floorStep(map(), cf, 1);
+          const s = { id: uid('st'), x, y, w, h, dir: st().stairDir, rise: next ? +(next.elev - floorById(map(), cf).elev).toFixed(2) : 3, ...fl() };
           ed.change(() => map().stairs.push(s), 'Лестница добавлена'); ed.select({ type: 'stairs', id: s.id });
         }
         ed.redraw(); return;
@@ -193,7 +198,7 @@ export function createTools(ed) {
       if (tool === 'erase') return erase(sel);
       if (tool === 'poi') {
         if (sel?.type === 'poi') return ed.select(sel);
-        const m = { id: uid('m'), name: 'Новая метка', cat: st().poiCat, x: sn(w.x), y: sn(w.y), text: '' };
+        const m = { id: uid('m'), name: 'Новая метка', cat: st().poiCat, x: sn(w.x), y: sn(w.y), text: '', ...fl() };
         ed.change(() => map().pois.push(m), 'Метка поставлена — впишите название и текст');
         return ed.select({ type: 'poi', id: m.id });
       }
