@@ -7,6 +7,7 @@ import { $, Sheet, badge, esc, icon, photo, themeButton, toast } from '../core/u
 import { iconUrl, pointIconUrl } from '../core/icons.js';
 import { createMascot, mascotSettings, setSound, soundOn } from '../core/mascot.js';
 import { playTransition } from '../core/transition.js';
+import { palmWipe, preloadPalm } from '../core/palm.js';
 import { SUGGEST, answer } from './assistant.js';
 
 const LOADER_GIF = new URL('../../assets/mascot/full.gif', import.meta.url).href;
@@ -304,6 +305,10 @@ export async function mountVisitor(root, api) {
   function arrived(p) {
     setHash('pano/' + panoKey(p)); store.set(lastKey, p.id);
   }
+  /** Следующая точка маршрута после точки id (если идём по маршруту). */
+  function routeNext(id) { const ns = S.route?.nodes || [], i = ns.findIndex((n) => n.id === id); return i >= 0 ? ns[i + 1] || null : null; }
+  /** Стрелки точки: у следующей по маршруту — пометка next (она ярче, остальные приглушены). */
+  function arrowsFor(p) { const nx = routeNext(p.id); return arrowItems(p, neighbors(map, p.id)).map((q) => (nx && q.id === nx.id ? { ...q, next: true } : q)); }
   function openPano(id, face) {
     const p = map.panos.find((x) => x.id === id);
     if (!p) return toast('Этой точки обзора больше нет на карте');
@@ -312,16 +317,19 @@ export async function mountVisitor(root, api) {
     S.look = { type: 'pano', id, plan: { x: p.x, y: p.y } };
     const center = stadium ? { x: ST.cx, y: ST.cy } : null;
     scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, face || (center && Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? center : nb[0]) || center || { x: p.x + 1, y: p.y }, face ? {} : startView(p) || {});
+    let ready = Promise.resolve(true);
     if (p.img) {
       loading(true);
-      scene.setPhoto(p.img, p.photoRot).then((ok) => {
-        if (tok !== S.tok) return;
+      ready = scene.setPhoto(p.img, p.photoRot).then((ok) => {
+        if (tok !== S.tok) return ok;
         if (ok) loading(false); else loading('error', () => openPano(id, face), () => loading(false));
+        return ok;
       });
     } else { scene.setPhoto(null); loading(false); }
-    scene.setArrows(arrowItems(p, nb)); scene.preload(nb.map((q) => q.img));
+    scene.setArrows(arrowsFor(p)); scene.preload(nb.map((q) => q.img)); preloadPalm();
     enterLookUI(p.name, panoSub(p), panoChips(p)); buildMini(); setEmbed(p); arrived(p);
     mascot.guide(p.guide);   // маскот рассказывает об этом месте (текст точки задаёт админ)
+    return ready;   // выполнится, когда фото точки показано — по нему ладошка открывает кадр
   }
   async function glide(id, noPhoto) {
     // один переход за раз: повторные нажатия, пока идёт загрузка или движение, игнорируются
@@ -340,29 +348,17 @@ export async function mountVisitor(root, api) {
       await tex;
       S.busy = false;
       // смотрим дальше по ходу движения — как в конце видео
-      openPano(id, { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) });
+      const nx = routeNext(id);
+      openPano(id, nx ? { x: nx.x, y: nx.y } : { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) });
       setTimeout(tv.close, 120);
       return;
     }
-    let url = noPhoto ? null : q.img || null;
-    if (url) {
-      // сначала дожидаемся фото следующей точки — так между панорамами не мелькает чёрный экран или 3D-модель
-      loading(true);
-      const tex = await scene.tryTex(url);
-      if (tok !== S.tok || !S.look) return;
-      if (!tex) { S.busy = false; loading('error', () => glide(id), () => { loading(false); glide(id, true); }); return; }
-      loading(false);
-    }
+    // переход «ладошкой»: ладонь закрывает кадр, под ней открывается следующая точка, ладонь уходит.
+    // Смотрим по ходу маршрута (если он есть), иначе — дальше в направлении движения.
     scene.setArrows([]); $('#lkChips').innerHTML = ''; setEmbed(null);
-    scene.glideTo(q.x, q.y, elevOf(map, q) + (q.z || 0) + 1.6, () => {
-      S.busy = false;
-      if (tok !== S.tok) return;
-      S.look = { type: 'pano', id, plan: { x: q.x, y: q.y } };
-      const nb = neighbors(map, id); scene.setArrows(arrowItems(q, nb)); scene.preload(nb.map((n) => n.img));
-      $('#lkName').textContent = q.name; $('#lkSub').textContent = panoSub(q); $('#lkChips').innerHTML = panoChips(q); setEmbed(q); arrived(q);
-      mascot.guide(q.guide);
-    }, { url, rot: q.photoRot });
-    if (!scene.gliding) S.busy = false;   // переход не начался (например, вышли из панорамы)
+    const nx = routeNext(id), face = nx ? { x: nx.x, y: nx.y } : { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) };
+    await palmWipe(root.querySelector('.stage'), () => { S.busy = false; return tok === S.tok && S.look ? openPano(id, face) : null; });
+    S.busy = false;
   }
 
   // ---------- звук, полный экран, снимок, ссылка ----------
