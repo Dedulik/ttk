@@ -506,23 +506,32 @@ export class Scene3D {
     return s;
   }
   dropSphere(s) { if (!s) return; this.scene.remove(s); s.geometry.dispose(); s.material.dispose(); }   // текстура остаётся в кэше
+  /**
+   * Стрелки переходов на полу. items — соседние точки; it.yaw — направление по фото (если админ поставил вручную),
+   * it.next — следующая точка маршрута: её стрелка ярче и чуть крупнее, остальные приглушены.
+   */
   setArrows(items) { this.dirty = true;
     clear(this.groups.arrows);
     if (!this.look) return;
     const shape = new THREE.Shape([[0, 0.62], [0.56, 0], [0.34, 0], [0, 0.36], [-0.34, 0], [-0.56, 0]].map(([a, b]) => new THREE.Vector2(a, b)));
-    const { x, y } = this.look.plan;
+    const { x, y } = this.look.plan, routeOn = items.some((it) => it.next), R = 2.6;
     for (const it of items) {
-      // направление: на соседнюю точку по плану или (it.yaw) — туда, где админ поставил стрелку на фото
       const dx = it.x - x, dy = it.y - y, L = Math.hypot(dx, dy) || 1, g = new THREE.Group();
       const ux = Number.isFinite(it.yaw) ? Math.cos(it.yaw) : dx / L, uy = Number.isFinite(it.yaw) ? Math.sin(it.yaw) : dy / L;
+      const dim = routeOn && !it.next, k = it.next ? 0.36 : 0.28;
       g.userData.to = it.id;
       const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-PI / 2);
-      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(0.55); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.42, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
-      // стрелка стала меньше, а зона нажатия осталась прежней — невидимый круг побольше
-      const hit = new THREE.Mesh(new THREE.CircleGeometry(1.05, 24), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })); hit.rotation.x = -PI / 2;
-      g.add(hit, disc, arrow); g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * 3.2, -this.look.pos.y + 0.25 + Math.max(0, this.look.pos.y - 1.6), uy * 2.7)));
-      const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 10, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.35, 0); g.add(l);
+      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: dim ? 0x8a8d93 : 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true, opacity: dim ? 0.7 : 1 }));
+      arrow.scale.setScalar(k); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(k * 0.78, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: dim ? 0.55 : 0.85, depthTest: false, fog: false }));
+      disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
+      // стрелка маленькая, а нажимать на неё по-прежнему удобно — невидимый круг побольше
+      const hit = new THREE.Mesh(new THREE.CircleGeometry(0.75, 24), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })); hit.rotation.x = -PI / 2;
+      g.add(hit, disc, arrow);
+      // одно и то же расстояние по обеим осям — стрелка лежит точно в направлении перехода
+      g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * R, -this.look.pos.y + 0.2 + Math.max(0, this.look.pos.y - 1.6), uy * R)));
+      const l = this.label(`${it.next ? 'Дальше: ' : ''}${it.name} · ${Math.round(L)} м`, { px: 9, bg: it.next ? 'rgba(227,6,19,.92)' : 'rgba(23,24,26,.78)', fg: '#fff', maxDist: 1e9 });
+      l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.22, 0); g.add(l);
       this.groups.arrows.add(g);
     }
   }

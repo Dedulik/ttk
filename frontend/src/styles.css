@@ -586,3 +586,6 @@ body > .trans-video { position: fixed; z-index: 120; }
   .modes .role-tag { display: none; }
   .modes { overflow-x: auto; scrollbar-width: none; }
 }
+
+/* ---- переход «ладошкой» между панорамами ---- */
+.palm-wipe { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; z-index: 58; pointer-events: none; }
