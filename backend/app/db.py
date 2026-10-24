@@ -1,9 +1,10 @@
 """SQLite: схема и короткие помощники. Для продакшена можно заменить на PostgreSQL — запросы простые."""
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import current_app, g
+from flask import current_app, g, has_request_context, request
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -56,6 +57,47 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 """
 
+# Колонки, добавленные после первой версии. Старая база дополняется при запуске, данные не теряются.
+MIGRATIONS = {
+    "users": {
+        "last_login_at": "TEXT",
+        "failed_logins": "INTEGER NOT NULL DEFAULT 0",
+        "locked_until": "TEXT",
+        "token_version": "INTEGER NOT NULL DEFAULT 0",
+        "is_active": "INTEGER NOT NULL DEFAULT 1",
+        "password_changed_at": "TEXT",
+        "handle": "TEXT",   # адрес личной ссылки для посетителей: /?by=<handle>
+    },
+    "venues": {
+        "description": "TEXT NOT NULL DEFAULT ''",
+        "created_by": "INTEGER REFERENCES users(id)",
+        "created_at": "TEXT",
+    },
+    "audit_events": {"ip": "TEXT NOT NULL DEFAULT ''"},
+}
+
+
+def migrate(con: sqlite3.Connection) -> None:
+    con.executescript(SCHEMA)
+    for table, cols in MIGRATIONS.items():
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in cols.items():
+            if name not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    con.execute("CREATE INDEX IF NOT EXISTS audit_by_time ON audit_events (created_at)")
+    for u in con.execute("SELECT id, email FROM users WHERE handle IS NULL").fetchall():
+        con.execute("UPDATE users SET handle = ? WHERE id = ?", (free_handle(con, u["email"].split("@")[0]), u["id"]))
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_handle ON users (handle)")
+
+
+def free_handle(con, base: str, skip_id: int = 0) -> str:
+    """Свободный адрес ссылки: латиница, цифры, дефис; при совпадении добавляется номер."""
+    base = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:30] or "user"
+    h, n = base, 2
+    while con.execute("SELECT 1 FROM users WHERE handle = ? AND id != ?", (h, skip_id)).fetchone():
+        h, n = f"{base}-{n}", n + 1
+    return h
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -66,6 +108,7 @@ def connect(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA secure_delete = ON")   # удалённые записи (хэши паролей и т.п.) затираются на диске
     return con
 
 
@@ -95,4 +138,5 @@ def run(sql: str, *args) -> int:
 
 
 def audit(user_id, action: str, details: str = "") -> None:
-    run("INSERT INTO audit_events (user_id, action, details, created_at) VALUES (?,?,?,?)", user_id, action, details[:500], now())
+    ip =(request.remote_addr or "") if has_request_context() else ""
+    run("INSERT INTO audit_events (user_id, action, details, created_at, ip) VALUES (?,?,?,?,?)", user_id, action, details[:500], now(), ip)

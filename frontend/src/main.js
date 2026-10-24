@@ -1,26 +1,31 @@
-// Точка входа: выбираем сервер или демо-режим и открываем нужный экран.
-//   #/        — карта для посетителей (без входа)
-//   #/admin   — панель для сотрудников (вход по почте и паролю, права по ролям)
-import { createApi } from './core/api.js';
+// Точка входа карты для посетителей: выбираем сервер или демо-режим и открываем объект.
+//   index.html                  — «Ростов Арена»
+//   index.html?object=<адрес>   — любой опубликованный объект
+//   index.html?by=<автор>       — личная ссылка администратора: его объекты
+// Админ-панель — отдельная страница admin.html (старые ссылки #/admin ведут туда же).
+import { createApi, urlSlug } from './core/api.js';
 
+if (location.hash.startsWith('#/admin')) location.replace('admin.html');
 let root = document.getElementById('app');
-const api = await createApi();
+const api = (await createApi()).use(urlSlug());
+const by = new URLSearchParams(location.search).get('by');
 
 async function mount() {
   window.__ac?.abort(); window.__ac = new AbortController();   // снимаем обработчики прошлого экрана
   try {
-    if (location.hash.startsWith('#/admin')) {
-      const { mountAdmin } = await import('./admin/admin.js');
-      await mountAdmin(root, api);
-    } else {
-      const { mountVisitor } = await import('./visitor/visitor.js');
-      await mountVisitor(root, api);
+    if (by && !new URLSearchParams(location.search).has('object')) {
+      const { owner, venues } = await api.venuesBy(by);
+      // один объект — сразу карта, несколько — выбор
+      if (venues.length !== 1) { const { authorPage } = await import('./visitor/author.js'); authorPage(root, owner, venues); root.classList.remove('boot'); return; }
+      api.use(venues[0].slug);
     }
+    const { mountVisitor } = await import('./visitor/visitor.js');
+    await mountVisitor(root, api);
     root.classList.remove('boot');
   } catch (e) {
     console.error(e);
     root.className = 'fatal';
-    root.innerHTML = `<p>Не удалось открыть карту: ${String(e.message || e).replace(/</g, '&lt;')}</p><button onclick="location.reload()">Обновить</button>`;
+    root.innerHTML = `<p>Не удалось открыть карту: ${String(e.message || e).replace(/</g, '&lt;')}</p><a class="btn" href="index.html">Обновить</a> <a class="txt-btn" href="admin.html">Админ-панель</a>`;
   }
 }
 

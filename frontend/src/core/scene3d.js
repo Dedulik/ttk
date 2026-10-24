@@ -4,10 +4,11 @@
 //   look  — взгляд из точки (панорама, вид с места): палец крутит взгляд, щипок — приближение.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { CATS, PCATS, catColor, kindOf, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapePoints, standColor, wallSegments } from './model.js';
+import { CATS, PCATS, catColor, kindOf, mapBox, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, TIERS, ring, secMid, sp } from './stadium.js';
 
 const PI = Math.PI;
+const NEAR_ORBIT = 1.5, NEAR_LOOK = 0.2;
 const C = { x: 400, y: 262 };
 const W = (x, y, h = 0) => new THREE.Vector3(x - C.x, h, y - C.y);
 const ease = (k) => (k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2);
@@ -27,7 +28,8 @@ export class Scene3D {
     r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = 1.05;
     el.append(r.domElement);
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+    // ближняя плоскость 1,5 м в обзоре (точнее буфер глубины, нет мерцания), 0,2 м — во взгляде из точки
+    this.camera = new THREE.PerspectiveCamera(45, 1, NEAR_ORBIT, 5000);
     this.controls = new MapControls(this.camera, r.domElement);
     this.controls.addEventListener('change', () => (this.dirty = true));
     Object.assign(this.controls, { enableDamping: true, dampingFactor: 0.09, maxPolarAngle: 1.32, minDistance: 14, maxDistance: 1100, zoomToCursor: true, screenSpacePanning: false, rotateSpeed: 0.6 });
@@ -74,6 +76,8 @@ export class Scene3D {
     if (hole) sh.holes.push(new THREE.Path([...hole].reverse().map((p) => new THREE.Vector2(p[0] - C.x, p[1] - C.y))));
     const g = new THREE.ShapeGeometry(sh, 2); g.rotateX(PI / 2);
     mat.side = THREE.DoubleSide;
+    // слои земли лежат в сантиметрах друг над другом: без смещения глубины они мерцают при обзоре издалека
+    if (y < 1) Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -(2 + Math.round(y * 60)) });
     const m = new THREE.Mesh(g, mat); m.position.y = y; m.receiveShadow = true; this.groups[group].add(m); return m;
   }
   beam(group, a, b, r, mat) {
@@ -123,12 +127,17 @@ export class Scene3D {
 
   // ---------- сборка карты ----------
   setMap(map) {
-    this.map = map; C.x = 400; C.y = 262;
+    this.map = map;
+    // центр сцены — середина стадиона «Ростов Арены» или рамка объекта, собранного с нуля
+    const b = mapBox(map);
+    if (map.stadium) { C.x = 400; C.y = 262; this.span = 1; }
+    else { C.x = b.x + b.w / 2; C.y = b.y + b.h / 2; this.span = Math.max(0.25, Math.max(b.w, b.h) / 760); }
+    this.half = { x: Math.max(480, b.w * 0.6), z: Math.max(340, b.h * 0.6) };
     this.theme();
     for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos']) clear(this.groups[k]);
     this.screenSprites = this.screenSprites.filter((s) => this.groups.arrows.getObjectById(s.id) || this.groups.route.getObjectById(s.id));
     this.culled = [];
-    this.buildGround(); this.buildShapes(); this.buildStadium(); this.buildPois(); this.buildPanos();
+    this.buildGround(); this.buildShapes(); if (map.stadium) this.buildStadium(); this.buildPois(); this.buildPanos();
     if (this.route) this.setRoute(this.route);
     this.groups.roof.visible = this.roof; this.dirty = true;
   }
@@ -139,6 +148,7 @@ export class Scene3D {
     ground.rotation.x = -PI / 2;
     const site = m.shapes.find((s) => s.cat === 'plaza');
     if (site) this.flat(shapePoints(site), this.mat(this.dark ? '#2b2e33' : '#d9d5cd'), 0, 'world').userData.ref = site.id;
+    if (!m.stadium) return;
     // площадь вокруг стадиона и газоны, как на аэрофото
     this.flat(ring(118, 120), this.mat(this.dark ? '#33363b' : '#e7e4de'), 0.02, 'world');
     for (const k of [0, 1, 2, 3]) {
@@ -230,7 +240,7 @@ export class Scene3D {
     // поле, бровка, рекламные борта
     this.flat(ring(7), this.mat('#2f6f37'), 0.12, 'stadium');
     const pg = new THREE.PlaneGeometry(68, 105); pg.rotateX(-PI / 2);
-    const pitch = new THREE.Mesh(pg, new THREE.MeshStandardMaterial({ map: pitchTexture(), roughness: 0.95 })); pitch.position.copy(W(ST.cx, ST.cy, 0.16)); pitch.receiveShadow = true; this.groups.stadium.add(pitch);
+    const pitch = new THREE.Mesh(pg, new THREE.MeshStandardMaterial({ map: pitchTexture(), roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -14 })); pitch.position.copy(W(ST.cx, ST.cy, 0.16)); pitch.receiveShadow = true; this.groups.stadium.add(pitch);
     this.ribbon('stadium', 3.2, 0.1, 3.2, 1.0, this.mat('#1c3f8f', { emissive: '#1c3f8f', emissiveIntensity: 0.25 }), 0, 120);
     // трибуны
     for (const s of SECTORS) this.groups.stadium.add(this.sectorMesh(s, real));
@@ -333,7 +343,9 @@ export class Scene3D {
   setRoof(on) { this.dirty = true; this.roof = on; this.groups.roof.visible = on && !this.look; }
 
   // ---------- камера: обзор ----------
-  overview(now) { this.flyTo(W(C.x, C.y), new THREE.Vector3(-150, 330, 360), now); }
+  overview(now) { const k = this.span || 1; this.flyTo(W(C.x, C.y), new THREE.Vector3(-150 * k, 330 * k, 360 * k), now); }
+  /** Точка плана (метры) под позицией камеры. */
+  planOf(v) { return { x: v.x + C.x, y: v.z + C.y }; }
   stadiumView() { this.flyTo(W(ST.cx, ST.cy, 6), new THREE.Vector3(-150, 125, 170)); }
   focus(x, y, d = 70, h = 0) { this.flyTo(W(x, y, h), new THREE.Vector3(-0.55 * d, 0.85 * d, d)); }
   flyTo(target, offset, now) {
@@ -355,6 +367,7 @@ export class Scene3D {
     this.anim = null; this.controls.enabled = false;
     const yaw = face ? Math.atan2(face.y - y, face.x - x) : this.look?.yaw ?? 0;
     this.look = { pos: W(x, y, z), yaw, pitch: opts.pitch ?? -0.05, fov: 72, plan: { x, y }, kind: opts.kind || 'pano' };
+    this.camera.near = NEAR_LOOK; this.camera.updateProjectionMatrix();
     this.groups.panos.visible = false; this.groups.route.visible = false; this.groups.roof.visible = this.roof;
     this.applyLook();
   }
@@ -362,7 +375,7 @@ export class Scene3D {
     if (!this.look) return;
     const { plan } = this.look; this.look = null; this.setPhoto(null); clear(this.groups.arrows);
     this.controls.enabled = true; this.groups.panos.visible = true; this.groups.route.visible = true; this.groups.roof.visible = this.roof;
-    this.camera.fov = 45; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true;
+    this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true;
     if (!silent) { const t = W(plan.x, plan.y); this.camera.position.copy(t.clone().add(new THREE.Vector3(-40, 60, 60))); this.controls.target.copy(t); this.focus(plan.x, plan.y, 60); }
   }
   applyLook() {
@@ -481,7 +494,7 @@ export class Scene3D {
       }
     } else if (!this.look) {
       this.controls.update();
-      const t = this.controls.target; t.x = Math.max(-480, Math.min(480, t.x)); t.z = Math.max(-340, Math.min(340, t.z)); t.y = 0;
+      const t = this.controls.target, H = this.half || { x: 480, z: 340 }; t.x = Math.max(-H.x, Math.min(H.x, t.x)); t.z = Math.max(-H.z, Math.min(H.z, t.z)); t.y = 0;
     }
     if (a) this.dirty = true;
     if (!this.dirty) return;               // рисуем только когда что-то изменилось — бережём батарею

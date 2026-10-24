@@ -2,8 +2,14 @@
 // те же методы и роли, но данные живут в localStorage этого браузера.
 import { clone, normalize } from './model.js';
 
-const SLUG = 'rostov-arena';
+export const DEFAULT_SLUG = 'rostov-arena';
 const TOKEN_KEY = 'arena.token';
+/** Объект для экрана посетителя: index.html?object=<адрес>. */
+export const urlSlug = () => new URLSearchParams(location.search).get('object') || DEFAULT_SLUG;
+/** Ссылки для посетителей: на объект и личная ссылка администратора (все его опубликованные объекты). */
+const siteBase = () => new URL('index.html', location.href).href.replace(/index\.html$/, '');
+export const objectLink = (slug) => `${siteBase()}?object=${encodeURIComponent(slug)}`;
+export const authorLink = (handle) => `${siteBase()}?by=${encodeURIComponent(handle)}`;
 
 export class ApiError extends Error {
   constructor(status, detail) { super(detail); this.status = status; }
@@ -17,7 +23,10 @@ export async function loadTemplate() {
 
 // ---------------- настоящий сервер ----------------
 class ServerApi {
-  constructor(base) { this.base = base; this.demo = false; this.token = localStorage.getItem(TOKEN_KEY); }
+  constructor(base) { this.base = base; this.demo = false; this.token = localStorage.getItem(TOKEN_KEY); this.slug = DEFAULT_SLUG; }
+  /** С каким объектом работают методы карты. */
+  use(slug) { this.slug = slug; return this; }
+  get v() { return `/api/venues/${encodeURIComponent(this.slug)}`; }
   async req(method, path, body, isForm) {
     const headers = {};
     if (this.token) headers.Authorization = 'Bearer ' + this.token;
@@ -31,20 +40,37 @@ class ServerApi {
     }
     return data;
   }
-  async login(email, password) { const r = await this.req('POST', '/api/auth/login', { email, password }); this.token = r.token; localStorage.setItem(TOKEN_KEY, r.token); return r.user; }
+  setToken(t) { this.token = t; localStorage.setItem(TOKEN_KEY, t); }
+  async login(email, password) { const r = await this.req('POST', '/api/auth/login', { email, password }); this.setToken(r.token); return r.user; }
   logout() { this.token = null; localStorage.removeItem(TOKEN_KEY); }
   me() { return this.token ? this.req('GET', '/api/auth/me') : Promise.resolve(null); }
-  async published() { const r = await this.req('GET', `/api/venues/${SLUG}/map`); return { ...r, data: normalize(r.data) }; }
-  async draft() { const r = await this.req('GET', `/api/venues/${SLUG}/draft`); return { ...r, data: normalize(r.data) }; }
-  saveDraft(data, base_revision) { return this.req('PUT', `/api/venues/${SLUG}/draft`, { data, base_revision }); }
-  publish(comment) { return this.req('POST', `/api/venues/${SLUG}/publish`, { comment }); }
-  versions() { return this.req('GET', `/api/venues/${SLUG}/versions`); }
-  restore(id) { return this.req('POST', `/api/venues/${SLUG}/versions/${id}/restore`); }
+  async updateMe(b) { const r = await this.req('PATCH', '/api/auth/me', b); if (r.token) this.setToken(r.token); return r.user; }
+  logoutAll() { return this.req('POST', '/api/auth/logout-all'); }
+  myActivity() { return this.req('GET', '/api/auth/me/activity'); }
+  venues() { return this.req('GET', '/api/venues'); }
+  venuesBy(handle) { return this.req('GET', `/api/venues/by/${encodeURIComponent(handle)}`); }
+  createVenue(b) { return this.req('POST', '/api/venues', b); }
+  updateVenue(slug, b) { return this.req('PATCH', `/api/venues/${encodeURIComponent(slug)}`, b); }
+  deleteVenue(slug, confirm) { return this.req('DELETE', `/api/venues/${encodeURIComponent(slug)}`, { confirm }); }
+  async published() { const r = await this.req('GET', `${this.v}/map`); return { ...r, data: normalize(r.data) }; }
+  async draft() { const r = await this.req('GET', `${this.v}/draft`); return { ...r, data: normalize(r.data) }; }
+  saveDraft(data, base_revision) { return this.req('PUT', `${this.v}/draft`, { data, base_revision }); }
+  publish(comment) { return this.req('POST', `${this.v}/publish`, { comment }); }
+  versions() { return this.req('GET', `${this.v}/versions`); }
+  restore(id) { return this.req('POST', `${this.v}/versions/${id}/restore`); }
   users() { return this.req('GET', '/api/users'); }
   createUser(u) { return this.req('POST', '/api/users', u); }
   updateUser(id, u) { return this.req('PATCH', `/api/users/${id}`, u); }
   deleteUser(id) { return this.req('DELETE', `/api/users/${id}`); }
   upload(file) { const f = new FormData(); f.append('file', file); return this.req('POST', '/api/uploads', f, true); }
+  audit() { return this.req('GET', '/api/admin/audit?limit=200'); }
+  security() { return this.req('GET', '/api/admin/security'); }
+  async backup() {
+    const r = await fetch(this.base + '/api/admin/backup', { headers: { Authorization: 'Bearer ' + this.token } });
+    if (!r.ok) throw new ApiError(r.status, (await r.json().catch(() => ({}))).detail || 'Не удалось сделать копию');
+    const name = /filename="?([^";]+)/.exec(r.headers.get('Content-Disposition') || '')?.[1] || 'arena-backup.db';
+    return { blob: await r.blob(), name };
+  }
 }
 
 // ---------------- демо без сервера ----------------
@@ -69,8 +95,30 @@ const ss = {
   mem: {},
 };
 
+const serverOnly = () => { throw new ApiError(501, 'Доступно только при запуске с сервером (python run.py)'); };
+
 class DemoApi {
-  constructor() { this.demo = true; this.token = ss.get(TOKEN_KEY); }
+  constructor() { this.demo = true; this.token = ss.get(TOKEN_KEY); this.slug = DEFAULT_SLUG; }
+  use() { return this; }
+  async venues() {
+    const d = store.get('draft'), v = store.get('versions', [])[0];
+    return [{ slug: DEFAULT_SLUG, name: 'Ростов Арена', description: 'Демо в браузере', published: v?.number, published_at: v?.published_at, revision: d?.revision, updated_at: d?.updated_at, updated_by: d?.updated_by }];
+  }
+  async venuesBy() { return { owner: { name: 'Администратор', handle: 'admin' }, venues: await this.venues() }; }
+  createVenue = serverOnly; updateVenue = serverOnly; deleteVenue = serverOnly;
+  audit = serverOnly; security = serverOnly; backup = serverOnly; logoutAll = serverOnly;
+  async myActivity() { return []; }
+  async updateMe(b) {
+    const us = store.get('users', []), u = us.find((x) => 'demo:' + x.id === this.token);
+    if (!u) throw new ApiError(401, 'Нужно войти');
+    if (b.new_password) {
+      if (b.password !== u.password) throw new ApiError(403, 'Текущий пароль указан неверно');
+      if (b.new_password.length < 8 || !/\d/.test(b.new_password) || !/\p{L}/u.test(b.new_password)) throw new ApiError(422, 'Пароль — от 8 символов, нужны буквы и цифры');
+      u.password = b.new_password;
+    }
+    if (b.name != null) u.name = b.name.trim();
+    store.set('users', us); return pub(u);
+  }
   async init() {
     if (!store.get('draft')) {
       const t = await loadTemplate();
@@ -146,7 +194,7 @@ export async function createApi() {
   const base = window.API_BASE ?? '';
   if (!window.__FORCE_DEMO__) {
     try {
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 2500);
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
       const r = await fetch(base + '/api/health', { signal: ctl.signal }); clearTimeout(t);
       if (r.ok && (await r.json()).ok) return new ServerApi(base);
     } catch { /* сервера нет — демо */ }

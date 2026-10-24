@@ -28,7 +28,7 @@ export const TOOLS = {
 
 export const HINTS = {
   select: 'Нажмите на объект, чтобы изменить его. Тяните — переместить, белые квадраты — размер и вершины.',
-  rect: 'Проведите по плану, чтобы нарисовать прямоугольник. Нажатие — готовая фигура 8 × 6 м.',
+  rect: 'Проведите по плану, чтобы нарисовать прямоугольник. Нажатие на пустое место — фигура 8 × 6 м, на фигуру — выбрать её.',
   poly: 'Ставьте вершины нажатиями. Нажмите на первую точку или «Готово», чтобы замкнуть контур.',
   ellipse: 'Проведите по плану — получится овал или круг.',
   wall: 'Ставьте точки стены нажатиями. «Готово» — закончить стену.',
@@ -131,7 +131,7 @@ export function createTools(ed) {
         T.drag = { type: 'move', sel, start: w, orig: clone(obj), started: false };
         return true;
       }
-      if (tool === 'rect' || tool === 'ellipse' || tool === 'stairs') { const [x, y] = P(w); T.draft = { tool, x0: x, y0: y, x1: x, y1: y, moved: false }; return true; }
+      if (tool === 'rect' || tool === 'ellipse' || tool === 'stairs') { const [x, y] = P(w); T.draft = { tool, x0: x, y0: y, x1: x, y1: y, moved: false, hit: selOf(hit) }; return true; }
       return false;
     },
     move(w) {
@@ -160,6 +160,8 @@ export function createTools(ed) {
         const d = T.draft; T.draft = null;
         let x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1), w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
         const tiny = w < 1 || h < 1;
+        // нажатие по уже нарисованной фигуре выделяет её, а не создаёт поверх новую 8 × 6 м
+        if (tiny && d.hit?.type === 'shape' && ed.find(d.hit)?.cat !== 'plaza') { ed.select(d.hit); ed.redraw(); return; }
         if (d.tool === 'rect') { if (tiny) { w = 8; h = 6; x = d.x0 - 4; y = d.y0 - 3; } createShape('rect', { x, y, w, h }); }
         if (d.tool === 'ellipse') { if (tiny) createShape('ellipse', { cx: d.x0, cy: d.y0, rx: 4, ry: 4 }); else createShape('ellipse', { cx: x + w / 2, cy: y + h / 2, rx: w / 2, ry: h / 2 }); }
         if (d.tool === 'stairs') {

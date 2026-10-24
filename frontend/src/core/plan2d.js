@@ -1,6 +1,6 @@
 // 2D-план в SVG. Размеры подписей и линий заданы в экранных пикселях — на телефоне шрифт не раздувается.
 // Жесты: один палец — сдвиг (или инструмент), два пальца — масштаб, колесо — масштаб к курсору.
-import { CATS, PCATS, catColor, kindOf, poiColor, sectorColor, shapeBox, shapePoints, standColor, wallSegments } from './model.js';
+import { CATS, PCATS, catColor, kindOf, mapBox, poiColor, sectorColor, shapeArea, shapeBox, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, ring, secMid, secPts, sp } from './stadium.js';
 import { esc } from './ui.js';
 
@@ -26,7 +26,7 @@ export class Plan2D {
     this.focus(x + w / 2, y + h / 2, Math.max(w, h * ar) * 1.15);
   }
   focus(cx, cy, w) { const r = this.svg.getBoundingClientRect(), ar = r.width / Math.max(1, r.height) || 1, h = w / ar; this.view = { x: cx - w / 2, y: cy - h / 2, w, h }; this.render(); }
-  fitAll() { this.fitBox(20, 4, 760, 516); }
+  fitAll() { if (!this.map) return; const b = mapBox(this.map); this.fitBox(b.x, b.y, b.w, b.h); }
   zoomAt(p, f) {
     const v = this.view, nw = Math.max(12, Math.min(2600, v.w * f)), r = nw / v.w;
     v.x = p.x - (p.x - v.x) * r; v.y = p.y - (p.y - v.y) * r; v.w = nw; v.h *= r; this.render();
@@ -104,7 +104,8 @@ export class Plan2D {
       const step = [1, 2, 5, 10, 20, 50].find((st) => st / px >= 14) || 100;
       h += `<defs><pattern id="g1" width="${step}" height="${step}" patternUnits="userSpaceOnUse"><path d="M${step} 0H0V${step}" fill="none" stroke="var(--grid)" stroke-width="${fs(1)}"/></pattern></defs><rect x="${v.x}" y="${v.y}" width="${v.w}" height="${v.h}" fill="url(#g1)"/>`;
     }
-    const shapes = [...m.shapes].sort((a, b) => (a.cat === 'plaza' ? -1 : 0) - (b.cat === 'plaza' ? -1 : 0) || (kindOf(a).walls ? 1 : 0) - (kindOf(b).walls ? 1 : 0) || shapeBox(b).w * shapeBox(b).h - shapeBox(a).w * shapeBox(a).h);
+    // крупные фигуры снизу, вложенные сверху: зону внутри здания видно и можно выбрать отдельно
+    const shapes = [...m.shapes].sort((a, b) => (a.cat === 'plaza' ? -1 : 0) - (b.cat === 'plaza' ? -1 : 0) || shapeArea(b) - shapeArea(a));
     const geom = (s, attrs) => s.type === 'rect' ? `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" ${attrs}/>` : s.type === 'ellipse' ? `<ellipse cx="${s.cx}" cy="${s.cy}" rx="${s.rx}" ry="${s.ry}" ${attrs}/>` : `<polygon points="${pts(s.pts)}" ${attrs}/>`;
     for (const s of shapes.filter((x) => x.cat === 'plaza')) h += geom(s, `data-kind="shape" data-id="${s.id}" fill="var(--plaza)" stroke="var(--line-strong)" stroke-width="${fs(1)}"`);
     if (admin && o.underlay && o.underlayOpacity > 0) h += `<image href="${o.underlay.src}" x="${o.underlay.x}" y="${o.underlay.y}" width="${o.underlay.w}" height="${o.underlay.h}" opacity="${o.underlayOpacity}" preserveAspectRatio="none" style="pointer-events:none"/>`;
@@ -123,9 +124,11 @@ export class Plan2D {
     }
     for (const seg of wallSegments(m)) h += `<line data-kind="wall" data-id="${seg.owner}" x1="${seg.a[0]}" y1="${seg.a[1]}" x2="${seg.b[0]}" y2="${seg.b[1]}" stroke="${seg.color || 'var(--wall-line)'}" stroke-width="${Math.max(seg.t, 2.2 * px)}" stroke-linecap="square"/>`;
     for (const d of m.doors) h += `<g data-kind="door" data-id="${d.id}"><circle cx="${d.x}" cy="${d.y}" r="${Math.max(d.w / 2, 5 * px)}" fill="var(--accent)" fill-opacity=".14"/><circle cx="${d.x}" cy="${d.y}" r="${fs(3)}" fill="var(--accent)"/></g>`;
-    h += this.stadiumSvg().shapes;
-    if (px < 0.4) for (const sec of SECTORS) { const [x, y] = secMid(sec).xy; h += `<text x="${x}" y="${y}" font-size="${Math.min(2.6, 10 * px)}" class="t-sec">${sec.id}</text>`; }
-    for (const k of ['A', 'B', 'C', 'D']) { const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 92); h += `<text x="${x}" y="${y}" font-size="${fs(11)}" class="t-stand" fill="${standColor(m, k)}">${STANDS[k].short} · ${k}</text>`; }
+    if (m.stadium) {
+      h += this.stadiumSvg().shapes;
+      if (px < 0.4) for (const sec of SECTORS) { const [x, y] = secMid(sec).xy; h += `<text x="${x}" y="${y}" font-size="${Math.min(2.6, 10 * px)}" class="t-sec">${sec.id}</text>`; }
+      for (const k of ['A', 'B', 'C', 'D']) { const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 92); h += `<text x="${x}" y="${y}" font-size="${fs(11)}" class="t-stand" fill="${standColor(m, k)}">${STANDS[k].short} · ${k}</text>`; }
+    }
     // подписи объектов — только если помещаются
     for (const s of shapes) {
       if (s.cat === 'plaza' || !s.name) continue;

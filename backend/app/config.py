@@ -12,7 +12,9 @@ def env(name: str, default: str) -> str:
 
 def load() -> dict:
     return {
+        # не задан — сервер сам создаст случайный ключ в data/secret.key
         "SECRET_KEY": env("SECRET_KEY", "dev-only-change-me"),
+        "BACKUP_KEEP": int(env("BACKUP_KEEP", "10")),
         "TOKEN_TTL_MIN": int(env("TOKEN_TTL_MIN", "720")),
         "DB_PATH": env("DB_PATH", str(BASE_DIR / "data" / "app.db")),
         "UPLOAD_DIR": env("UPLOAD_DIR", str(BASE_DIR / "data" / "uploads")),

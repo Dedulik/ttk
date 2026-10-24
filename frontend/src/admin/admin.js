@@ -1,60 +1,34 @@
-// Панель сотрудников: вход, редактор карты по ролям, публикация, версии, пользователи, цвета.
+// Конструктор карты объекта: построение, точки и панорамы, стадион (если есть), публикация, версии, цвета.
+// Открывается из админ-панели (admin.html#/edit/<адрес объекта>), вход и кабинет — в cabinet.js.
 import { ROLE_NAMES, can } from '../core/api.js';
-import { CATS, KINDS, PALETTE, PCATS, catColor, clone, kindOf, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, standColor } from '../core/model.js';
+import { CATS, KINDS, PALETTE, PCATS, catColor, clone, kindOf, mapsEmbed, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, standColor } from '../core/model.js';
 import { Plan2D } from '../core/plan2d.js';
 import { SECTORS, STANDS, ST, secMid, sector, setStadiumCenter } from '../core/stadium.js';
 import { $, Sheet, esc, fmtDate, icon, photo, toast } from '../core/ui.js';
 import { HINTS, TOOLS, createTools } from './tools.js';
 
-export async function mountAdmin(root, api) {
-  const user = await api.me().catch(() => null);
-  if (!user) return loginScreen(root, api);
-  const draft = await api.draft();
-  return editor(root, api, user, draft);
-}
-
-// ---------------- вход ----------------
-function loginScreen(root, api) {
-  root.innerHTML = `
-  <div class="login"><form id="lf" novalidate>
-    <img class="hero" src="${photo('facade')}" alt="">
-    <div><h1>Вход для сотрудников</h1><p class="cap">Редактор карты «Ростов Арены»</p></div>
-    <label class="field"><span class="lbl">Почта</span><input class="inp" id="le" type="email" autocomplete="username" required></label>
-    <label class="field"><span class="lbl">Пароль</span><input class="inp" id="lp" type="password" autocomplete="current-password" required></label>
-    <p class="err" id="lerr" hidden></p>
-    <button class="btn primary full" type="submit">Войти</button>
-    <div class="demo-note">${api.demo
-      ? '<b>Демо без сервера.</b> Данные хранятся только в этом браузере.<br>'
-      : 'Учётные записи выдаёт администратор. Для первого запуска созданы:<br>'}
-      <b>admin@arena.local</b> / admin12345 — администратор<br><b>editor@arena.local</b> / editor12345 — редактор<br><b>viewer@arena.local</b> / viewer12345 — наблюдатель</div>
-    <a class="txt-btn" href="#/" style="text-align:center">← Вернуться к карте</a>
-  </form></div>`;
-  $('#lf').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const err = $('#lerr'); err.hidden = true;
-    try { await api.login($('#le').value, $('#lp').value); window.__remount(); }
-    catch (ex) { err.textContent = ex.message; err.hidden = false; }
-  });
-  root.addEventListener('click', (e) => { const b = e.target.closest('.demo-note b'); if (b && b.textContent.includes('@')) { $('#le').value = b.textContent; $('#lp').value = b.nextSibling.textContent.split('—')[0].replace('/', '').trim(); } });
-}
-
 // ---------------- редактор ----------------
-function editor(root, api, user, draft) {
+export function editor(root, api, user, draft) {
   const isEditor = can(user, 'editor'), isAdmin = can(user, 'admin');
+  const venue = draft.venue || { slug: api.slug, name: 'Ростов Арена' };
+  let map = draft.data, undo = [], redo = [], saveT = null, rebuildT = null, scene = null;
   const state = {
     mode: 'build', tool: 'select', sel: null, view: '2d', panel: null, readonly: !isEditor,
     newKind: 'room', snap: 0.5, wallThick: 0.2, doorWidth: 1.6, stairDir: 'x', poiCat: 'info',
     dirty: false, saving: false, savedAt: draft.updated_at, savedBy: draft.updated_by, rev: draft.revision, conflict: false,
-    under: { src: photo('genplan'), x: 0, y: 0, w: 793, h: 523 }, underOp: 0.3,
+    under: underlayOf(map), underOp: 0.3,
   };
-  let map = draft.data, undo = [], redo = [], saveT = null, rebuildT = null, scene = null;
+  const hasStadium = () => !!map.stadium;
+  // подложка: генплан «Ростов Арены» или своя картинка, которую админ загрузил для нового объекта
+  function underlayOf(m) { return m.underlay || (m.stadium ? { src: photo('genplan'), x: 0, y: 0, w: 793, h: 523 } : null); }
+  const faceOf = (p, nb) => nb[0] || (hasStadium() ? { x: ST.cx, y: ST.cy } : { x: p.x + 1, y: p.y });
   setStadiumCenter(map);
 
   root.innerHTML = `
   <div class="adm">
     <header class="appbar">
-      <a class="iconbtn flat" href="#/" aria-label="К карте" title="К карте">${icon('back')}</a>
-      <div class="title"><b>Редактор карты</b><span id="st"><i></i>Черновик</span></div>
+      <a class="iconbtn flat" href="#/" aria-label="К объектам" title="К списку объектов">${icon('back')}</a>
+      <div class="title"><b>Конструктор · ${esc(venue.name)}</b><span id="st"><i></i>Черновик</span></div>
       <button class="iconbtn flat" data-act="undo" aria-label="Отменить" title="Отменить (Ctrl+Z)">${icon('undo')}</button>
       <button class="iconbtn flat" data-act="redo" aria-label="Повторить" title="Повторить (Ctrl+Shift+Z)">${icon('redo')}</button>
       <button class="iconbtn flat" data-act="view3d" aria-label="3D-просмотр" title="3D-просмотр">${icon('cube')}</button>
@@ -64,7 +38,7 @@ function editor(root, api, user, draft) {
     <nav class="modes" role="tablist">
       <button role="tab" data-mode="build" aria-selected="true">Построение</button>
       <button role="tab" data-mode="points" aria-selected="false">Точки и панорамы</button>
-      <button role="tab" data-mode="stadium" aria-selected="false">Стадион</button>
+      ${hasStadium() ? '<button role="tab" data-mode="stadium" aria-selected="false">Стадион</button>' : ''}
       <span class="role-tag">${esc(user.name && user.name !== ROLE_NAMES[user.role] ? user.name : user.email)} · ${ROLE_NAMES[user.role]}</span>
     </nav>
     <div class="workspace">
@@ -136,7 +110,7 @@ function editor(root, api, user, draft) {
 
   // ---------- отрисовка ----------
   function selRef() { const s = state.sel; return !s ? null : s.type === 'sector' ? 'sec:' + s.id : s.type === 'stadium' ? null : s.id; }
-  function redraw() { plan.set({ sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); }
+  function redraw() { state.under = underlayOf(map); plan.set({ underlay: state.under, sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); }
   function rebuildLater() { if (!scene) return; clearTimeout(rebuildT); rebuildT = setTimeout(() => scene.setMap(map), 450); }
   function toolbar() {
     const list = state.readonly ? [TOOLS.build[0]] : TOOLS[state.mode];
@@ -215,6 +189,9 @@ function editor(root, api, user, draft) {
         ${field('Название точки', `<input class="inp" id="f-pname" value="${esc(o.name)}" ${dis()}>`)}
         <button class="btn blue full" data-act="lookPano">${icon('eye')}Посмотреть панораму</button>
         <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото.' : 'Сейчас вид строится из 3D-модели. Загрузите сферическое фото (формат 2:1) с камеры 360° или склейку с телефона.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
+        ${field('Панорама Google Maps или видео YouTube', `<textarea class="inp" id="f-pembed" placeholder="Код &lt;iframe&gt; из Google Maps (Поделиться → Встраивание карты) или ссылка на видео YouTube — обычное или 360°" ${dis()}>${esc(o.embed || '')}</textarea>`)}
+        ${o.embed && !mapsEmbed(o.embed) ? '<p class="cap">Не похоже на код Google Maps или ссылку YouTube — посетители увидят обычную панораму.</p>' : ''}
+        <p class="cap" style="margin:0">Берите только материалы, которые можно показывать: свои съёмки или ролики, где автор разрешил встраивание.</p>
         <div class="grid2">${field('Уровень пола, м', num('f-pz', o.z || 0, 0.5, 0))}</div>
         <div class="field"><span class="lbl">Переходы · ${nb.length}</span><div class="list">${nb.map((q) => `<div class="item"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(q.name)}</b><span>${Math.round(Math.hypot(q.x - o.x, q.y - o.y))} м</span></span>${state.readonly ? '' : `<button class="iconbtn flat" data-act="unlink" data-id="${q.id}" aria-label="Убрать переход">${icon('close')}</button>`}</div>`).join('') || '<p class="cap">Нет переходов. Включите «Связь» и нажмите на две точки.</p>'}</div></div>
         ${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить точку</button>`}`;
@@ -239,8 +216,36 @@ function editor(root, api, user, draft) {
     return `<div class="insp">
       <div><h2 style="font-size:16px">${m === 'build' ? 'Построение помещений' : 'Ключевые точки и панорамы'}</h2>
       <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Сначала нарисуйте помещения инструментами слева: прямоугольник, контур, овал, стены, двери и лестницы. Потом перейдите во вкладку «Точки и панорамы».' : 'Ставьте метки (входы, кафе, туалеты), точки обзора 360° и связывайте их — по связям посетители ходят в панорамах и строят маршруты.'}</p></div>
-      ${m === 'build' ? `<div class="field"><span class="lbl">Подложка — генплан</span><input type="range" id="f-under" min="0" max="1" step="0.05" value="${state.underOp}" aria-label="Прозрачность подложки"><span class="cap">Обводите схему по сетке. Подложку видят только сотрудники.</span></div>` : ''}
+      ${m === 'build' ? underlayBlock() : ''}
       <h3 class="h-sec">${m === 'build' ? `Объекты · ${map.shapes.length - 1}` : `Метки · ${map.pois.length}`}</h3><div class="list">${list}</div></div>`;
+  }
+
+  function underlayBlock() {
+    const u = state.under, own = !!map.underlay;
+    if (!u) return `<div class="card"><b>Начните с подложки</b><p class="cap" style="margin:0">Загрузите план этажа, генплан или скриншот карты — и обводите его инструментами слева. Подложку видят только сотрудники.</p>
+      ${state.readonly ? '' : `<button class="btn sm" data-act="underUp">${icon('image')}Загрузить подложку</button>`}</div>`;
+    return `<div class="field"><span class="lbl">Подложка${own ? '' : ' — генплан'}</span><input type="range" id="f-under" min="0" max="1" step="0.05" value="${state.underOp}" aria-label="Прозрачность подложки">
+      ${own ? `<div class="grid2">${field('Ширина, м', num('f-uw', u.w, 1, 5))}${field('Сдвиг X / Y, м', `<div class="row nowrap">${num('f-ux', u.x, 1)}${num('f-uy', u.y, 1)}</div>`)}</div>
+        <span class="cap">Подгоните ширину под реальный размер: например, по известной длине здания.</span>` : ''}
+      <span class="cap">Обводите схему по сетке. Подложку видят только сотрудники.</span>
+      ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="underUp">${icon('image')}${own ? 'Заменить' : 'Своя подложка'}</button>${own ? '<button class="btn sm ghost" data-act="underRm">Убрать</button>' : ''}</div>`}</div>`;
+  }
+  function uploadUnderlay() {
+    const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      try {
+        toast('Загружаю подложку…');
+        const r = await api.upload(f), img = new Image();
+        img.onload = () => {
+          const b = map.bounds || { w: 200 }, w = map.underlay?.w || b.w || 200;
+          ed.change(() => { map.underlay = { src: r.url, x: map.underlay?.x || 0, y: map.underlay?.y || 0, w, h: (w * img.naturalHeight) / img.naturalWidth }; }, 'Подложка добавлена');
+          plan.fitAll(); inspector();
+        };
+        img.src = r.url;
+      } catch (e) { toast(e.message, 4000); }
+    };
+    inp.click();
   }
 
   function stadiumPanel() {
@@ -252,19 +257,23 @@ function editor(root, api, user, draft) {
 
   function panel(name) {
     state.panel = name;
-    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', users: 'Пользователи и роли', colors: 'Цвета карты', account: 'Мой аккаунт' }[name]}</h2></div>`;
+    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты' }[name]}</h2></div>`;
     if (name === 'menu') {
       const items = [
         isAdmin && ['publish', 'publish', 'Публикация', 'Выпустить черновик для посетителей'],
         ['versions', 'history', 'История версий', isAdmin ? 'Посмотреть и откатить' : 'Посмотреть'],
-        isAdmin && ['users', 'people', 'Пользователи и роли', 'Кто может редактировать'],
-        ['colors', 'palette', 'Цвета карты', 'Трибуны, типы объектов и меток'],
-        ['account', 'user', 'Мой аккаунт', `${esc(user.email)} · ${ROLE_NAMES[user.role]}`],
+        ['colors', 'palette', 'Цвета карты', hasStadium() ? 'Трибуны, типы объектов и меток' : 'Типы объектов и меток'],
+      ].filter(Boolean);
+      const links = [
+        ['#/', 'map', 'Все объекты', 'Создать новый объект или открыть другой'],
+        ['#/account', 'user', 'Личный кабинет', `${esc(user.email)} · ${ROLE_NAMES[user.role]}`],
+        isAdmin && ['#/team', 'people', 'Команда и администраторы', 'Кто может редактировать'],
       ].filter(Boolean);
       h += `<div class="list menu-list">${items.map(([p, ic, n, sub]) => `<button class="item" data-act="panel" data-p="${p}">${icon(ic)}<span class="t"><b>${n}</b><span>${sub}</span></span>${icon('chevron', 'chev')}</button>`).join('')}
+        ${links.map(([href, ic, n, sub]) => `<a class="item" href="${href}">${icon(ic)}<span class="t"><b>${n}</b><span>${sub}</span></span>${icon('chevron', 'chev')}</a>`).join('')}
         <button class="item" data-act="exportJson">${icon('save')}<span class="t"><b>Скачать карту (JSON)</b><span>Резервная копия или новый шаблон для репозитория</span></span></button>
         ${isEditor ? `<button class="item" data-act="importJson">${icon('upload')}<span class="t"><b>Загрузить карту из JSON</b><span>Заменит черновик, можно отменить</span></span></button>` : ''}
-        <a class="item" href="#/">${icon('map')}<span class="t"><b>Открыть карту как посетитель</b><span>Опубликованная версия</span></span></a>
+        <a class="item" href="index.html?object=${encodeURIComponent(venue.slug)}" target="_blank" rel="noopener">${icon('eye')}<span class="t"><b>Открыть карту как посетитель</b><span>Опубликованная версия, в новой вкладке</span></span></a>
         ${state.conflict ? `<button class="item" data-act="reload">${icon('history')}<span class="t"><b>Загрузить свежий черновик</b><span>Ваши несохранённые правки пропадут</span></span></button>` : ''}</div>
         ${api.demo ? '<p class="demo-note"><b>Демо без сервера.</b> Черновик, версии и пользователи хранятся в этом браузере. Запустите бэкенд, чтобы работать командой.</p>' : ''}`;
     }
@@ -276,17 +285,11 @@ function editor(root, api, user, draft) {
         <dl class="kv"><dt>Объектов</dt><dd>${map.shapes.length}</dd><dt>Меток</dt><dd>${map.pois.length}</dd><dt>Точек обзора</dt><dd>${map.panos.length} (с фото: ${map.panos.filter((p) => p.img).length})</dd><dt>Переходов</dt><dd>${map.links.length}</dd></dl>`;
     }
     if (name === 'versions') { h += '<div class="list" id="vers"><p class="cap">Загружаю…</p></div>'; loadVersions(); }
-    if (name === 'users') { h += `<div class="list" id="users"><p class="cap">Загружаю…</p></div>
-      <form class="card" id="uf"><b>Добавить сотрудника</b>${field('Почта', '<input class="inp" name="email" type="email" required>')}${field('Имя', '<input class="inp" name="name">')}
-        <div class="grid2">${field('Пароль', '<input class="inp" name="password" type="text" minlength="6" required>')}${field('Роль', `<select class="inp" name="role">${Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}" ${k === 'editor' ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}</div>
-        <button class="btn dark" type="submit">Добавить</button></form>
-      <div class="card"><b>Что может каждая роль</b><dl class="kv"><dt>Наблюдатель</dt><dd>смотрит черновик и историю</dd><dt>Редактор</dt><dd>рисует, ставит точки, сохраняет черновик</dd><dt>Администратор</dt><dd>всё выше + публикация, откат, пользователи</dd></dl></div>`; loadUsers(); }
     if (name === 'colors') {
       h += `<div class="field"><span class="lbl">Готовые схемы</span><div class="row"><button class="btn sm" data-act="preset" data-v="scheme">Как на схеме</button><button class="btn sm" data-act="preset" data-v="club">Жёлто-синяя</button><button class="btn sm" data-act="preset" data-v="calm">Спокойная</button></div></div>
         <div class="field"><span class="lbl">Типы объектов</span>${Object.entries(CATS).filter(([c]) => c !== 'plaza').map(([c, v]) => `<div class="row nowrap" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:5px 0"><span class="row nowrap"><span class="dot" style="background:${catColor(map, c)}"></span>${v.n}</span><input type="color" data-catcolor="${c}" value="${catColor(map, c)}" ${dis()}></div>`).join('')}</div>
         <div class="field"><span class="lbl">Типы меток</span>${Object.entries(PCATS).map(([c, v]) => `<div class="row nowrap" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:5px 0"><span class="row nowrap"><span class="glyph sm" style="background:${map.style.poi[c] || v.c}">${esc(v.g)}</span>${v.n}</span><input type="color" data-poicolor="${c}" value="${map.style.poi[c] || v.c}" ${dis()}></div>`).join('')}</div>`;
     }
-    if (name === 'account') h += `<dl class="kv"><dt>Имя</dt><dd>${esc(user.name || '—')}</dd><dt>Почта</dt><dd>${esc(user.email)}</dd><dt>Роль</dt><dd>${ROLE_NAMES[user.role]}</dd><dt>Режим</dt><dd>${api.demo ? 'демо в браузере' : 'сервер'}</dd></dl><button class="btn" data-act="logout">${icon('logout')}Выйти</button>`;
     sheet.set(`<div class="insp">${h}</div>`, 'full');
   }
   async function loadVersions() {
@@ -294,14 +297,6 @@ function editor(root, api, user, draft) {
       const vs = await api.versions();
       $('#vers').innerHTML = vs.map((v, i) => `<div class="item"><span class="glyph sm mono" style="background:${i === 0 ? 'var(--ok)' : 'var(--ink-3)'}">${v.number}</span><span class="t"><b>${esc(v.comment || 'Без описания')}</b><span>${fmtDate(v.published_at)}${v.published_by ? ' · ' + esc(v.published_by) : ''}${i === 0 ? ' · сейчас у посетителей' : ''}</span></span>${isAdmin && i > 0 ? `<button class="btn sm" data-act="restore" data-id="${v.id}">Вернуть</button>` : ''}</div>`).join('');
     } catch (e) { $('#vers').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-  }
-  async function loadUsers() {
-    try {
-      const us = await api.users();
-      $('#users').innerHTML = us.map((u) => `<div class="item user-row"><span class="glyph sm" style="background:var(--ink-2)">${esc((u.name || u.email)[0].toUpperCase())}</span><span class="t"><b>${esc(u.name || u.email)}</b><span>${esc(u.email)}</span></span>
-        <select class="inp" data-role="${u.id}" ${u.id === user.id ? 'disabled' : ''} aria-label="Роль">${Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${v}</option>`).join('')}</select>
-        ${u.id === user.id ? '' : `<button class="iconbtn flat" data-act="delUser" data-id="${u.id}" aria-label="Удалить">${icon('erase')}</button>`}</div>`).join('');
-    } catch (e) { $('#users').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
   }
   function syncFields() {
     const o = ed.find(state.sel); if (!o) return;
@@ -345,7 +340,7 @@ function editor(root, api, user, draft) {
   async function lookPano() {
     const p = ed.find(state.sel); await setView('3d');
     const nb = neighbors(map, p.id);
-    scene.enterLook(p.x, p.y, (p.z || 0) + 1.6, nb[0] || { x: ST.cx, y: ST.cy }); scene.setPhoto(p.img || null); scene.setArrows(nb);
+    scene.enterLook(p.x, p.y, (p.z || 0) + 1.6, faceOf(p, nb)); scene.setPhoto(p.img || null); scene.setArrows(nb);
     $('.look-exit', root).hidden = false;
   }
 
@@ -386,7 +381,7 @@ function editor(root, api, user, draft) {
     if (a === 'panel') panel(t.dataset.p);
     if (a === 'closePanel') { state.panel = null; inspector(); }
     if (a === 'exitLook' && scene) { scene.exitLook(); $('.look-exit', root).hidden = true; }
-    if (state.readonly && !['panel', 'closePanel', 'logout', 'reload', 'show3d', 'lookPano', 'desel'].includes(a)) return;
+    if (state.readonly && !['panel', 'closePanel', 'reload', 'show3d', 'lookPano', 'desel'].includes(a)) return;
     if (a === 'kind') ed.change(() => { o.kind = t.dataset.v; if (KINDS[o.kind].walls && !o.height) o.height = KINDS[o.kind].height; });
     if (a === 'cat') ed.change(() => { o.cat = t.dataset.v; });
     if (a === 'pcat') ed.change(() => { if (o.name === 'Новая метка' || o.name === PCATS[o.cat]?.n) o.name = PCATS[t.dataset.v].n; o.cat = t.dataset.v; });
@@ -402,6 +397,8 @@ function editor(root, api, user, draft) {
     if (a === 'photoRm') ed.change(() => delete o.photo);
     if (a === 'pano360') upload((url) => (o.img = url));
     if (a === 'pano360Rm') ed.change(() => delete o.img);
+    if (a === 'underUp') uploadUnderlay();
+    if (a === 'underRm') { ed.change(() => delete map.underlay, 'Подложка убрана'); inspector(); }
     if (a === 'show3d') focus3d();
     if (a === 'lookPano') lookPano();
     if (a === 'preset') {
@@ -422,14 +419,9 @@ function editor(root, api, user, draft) {
       if (t.dataset.sure !== '1') { t.dataset.sure = '1'; t.textContent = 'Точно?'; t.classList.add('primary'); return; }
       try { const d = await api.restore(+t.dataset.id); map = d.data; state.rev = d.revision; state.dirty = false; plan.setMap(map); rebuildLater(); status(); toast('Версия скопирована в черновик. Опубликуйте, чтобы её увидели посетители', 4000); panel('publish'); } catch (ex) { toast(ex.message, 4000); }
     }
-    if (a === 'delUser') {
-      if (t.dataset.sure !== '1') { t.dataset.sure = '1'; t.style.color = 'var(--accent)'; toast('Нажмите ещё раз, чтобы удалить'); return; }
-      try { await api.deleteUser(+t.dataset.id); toast('Пользователь удалён'); loadUsers(); } catch (ex) { toast(ex.message, 4000); }
-    }
-    if (a === 'logout') { api.logout(); window.__remount(); }
     if (a === 'exportJson') {
       const url = URL.createObjectURL(new Blob([JSON.stringify(map, null, 1)], { type: 'application/json' }));
-      const link = Object.assign(document.createElement('a'), { href: url, download: 'template_map.json' }); link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const link = Object.assign(document.createElement('a'), { href: url, download: `${venue.slug}.json` }); link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
     if (a === 'importJson' && isEditor) {
       const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'application/json,.json' });
@@ -448,6 +440,12 @@ function editor(root, api, user, draft) {
   root.addEventListener('input', (e) => {
     const t = e.target, o = ed.find(state.sel);
     if (t.id === 'f-under') { state.underOp = +t.value; redraw(); return; }
+    if (['f-uw', 'f-ux', 'f-uy'].includes(t.id) && map.underlay && !state.readonly) {
+      const n = +t.value, u = map.underlay; if (t.value === '' || Number.isNaN(n)) return;
+      if (!snapped) { ed.snapshot(); snapped = true; }
+      if (t.id === 'f-uw') { const w = Math.max(5, n); u.h = (u.h * w) / u.w; u.w = w; } else u[t.id === 'f-ux' ? 'x' : 'y'] = n;
+      markDirty(); redraw(); return;
+    }
     if (t.id === 'f-sec') { const sec = SECTORS.find((x) => x.id.toLowerCase() === t.value.trim().toLowerCase()); if (sec) { ed.select({ type: 'sector', id: sec.id }); const m = secMid(sec); plan.focus(m.xy[0], m.xy[1], 120); } return; }
     if (state.readonly) return;
     if (t.dataset.stand || t.dataset.catcolor || t.dataset.poicolor || t.dataset.color) {
@@ -465,6 +463,7 @@ function editor(root, api, user, draft) {
     const map1 = { 'f-name': ['name'], 'f-desc': ['desc'], 'f-mname': ['name'], 'f-mtext': ['text'], 'f-pname': ['name'] };
     if (map1[t.id]) { o[map1[t.id][0]] = v; const h2 = $('.insp-head h2', root); if (h2 && /name/.test(t.id)) h2.textContent = v; }
     if (t.id === 'f-stext') map.sectors[state.sel.id] = { ...map.sectors[state.sel.id], text: v };
+    if (t.id === 'f-pembed') { if (v.trim()) o.embed = mapsEmbed(v) || v.trim(); else delete o.embed; }
     if (ok) {
       const nums = { 'f-w': 'w', 'f-h': 'h', 'f-x': 'x', 'f-y': 'y', 'f-height': 'height', 'f-thick': 'thick', 'f-wh': 'height', 'f-dw': 'w', 'f-rise': 'rise', 'f-mx': 'x', 'f-my': 'y', 'f-mz': 'z', 'f-pz': 'z' };
       if (nums[t.id]) o[nums[t.id]] = ['w', 'h', 'height', 'thick', 'rise'].includes(nums[t.id]) ? Math.max(0.05, n) : n;
@@ -476,13 +475,6 @@ function editor(root, api, user, draft) {
   root.addEventListener('change', async (e) => {
     const t = e.target;
     if (t.id === 'f-real') ed.change(() => { map.style.realSeats = t.checked; });
-    if (t.dataset.role) { try { await api.updateUser(+t.dataset.role, { role: t.value }); toast('Роль изменена'); } catch (ex) { toast(ex.message, 4000); loadUsers(); } }
-  });
-  root.addEventListener('submit', async (e) => {
-    if (e.target.id !== 'uf') return;
-    e.preventDefault();
-    const f = new FormData(e.target);
-    try { await api.createUser(Object.fromEntries(f)); toast('Сотрудник добавлен'); e.target.reset(); loadUsers(); } catch (ex) { toast(ex.message, 4000); }
   });
   document.addEventListener('keydown', (e) => {
     if (e.target.closest('input, textarea, select')) return;
