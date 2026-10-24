@@ -1,4 +1,5 @@
-// Мелкие помощники интерфейса: экранирование, иконки, тосты, нижняя шторка, фото.
+// Мелкие помощники интерфейса: экранирование, иконки, тосты, нижняя шторка, фото, тема, подсказки.
+import { iconUrl } from './icons.js';
 
 export const $ = (s, root = document) => root.querySelector(s);
 export const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -43,8 +44,50 @@ const P = {
   publish: '<path d="M12 15V3M7.5 7.5L12 3l4.5 4.5"/><path d="M4 14v6h16v-6"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
+  volume: '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
 };
 export const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
+
+/** Значок метки для списков: картинка ТТК, а если её нет — цветной кружок с буквой. */
+export function badge(kind, color, glyph = '', cls = '') {
+  const u = iconUrl(kind);
+  return u ? `<span class="glyph ico ${cls}"><img src="${u}" alt="" loading="lazy"></span>` : `<span class="glyph ${cls}" style="background:${color}">${esc(glyph)}</span>`;
+}
+
+// ---------- тема: светлая / тёмная, выбор запоминается ----------
+const THEME_KEY = 'arena.theme';
+export function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  return t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+export function applySavedTheme() {
+  let t = null;
+  try { t = localStorage.getItem(THEME_KEY); } catch { /* без памяти */ }
+  document.documentElement.dataset.theme = t || currentTheme();
+}
+/** Переключить тему; 3D-сцены слушают событие themechange и перекрашиваются. */
+export function toggleTheme() {
+  const t = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* без памяти */ }
+  window.dispatchEvent(new CustomEvent('themechange', { detail: t }));
+  return t;
+}
+export const themeButton = (cls = 'iconbtn') => `<button class="${cls} theme-btn" data-theme-toggle aria-label="Светлая или тёмная тема" title="Светлая / тёмная тема">${icon('sun', 'th-sun')}${icon('moon', 'th-moon')}</button>`;
+// кнопка темы работает на любом экране — один обработчик на документ
+document.addEventListener('click', (e) => { if (e.target.closest?.('[data-theme-toggle]')) toggleTheme(); });
+
+// ---------- подсказка с названием точки при наведении ----------
+let tipEl = null;
+export function showTip(text, x, y) {
+  if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'map-tip'; tipEl.setAttribute('role', 'tooltip'); document.body.append(tipEl); }
+  tipEl.textContent = text; tipEl.hidden = false;
+  tipEl.style.left = Math.min(innerWidth - tipEl.offsetWidth - 8, x + 14) + 'px';
+  tipEl.style.top = Math.max(8, y - 34) + 'px';
+}
+export function hideTip() { if (tipEl) tipEl.hidden = true; }
 
 export function toast(text, ms = 2600) {
   let el = $('#toast');

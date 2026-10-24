@@ -3,7 +3,9 @@ import { Plan2D } from '../core/plan2d.js';
 import { Scene3D } from '../core/scene3d.js';
 import { CATS, LAYERS, PCATS, dist, elevOf, embedKind, floorById, floorsSorted, kindOf, layersFor, mapsEmbed, visitorLayerMode, nearestPano, neighbors, placeOf, poiColor, route, search, shapeCenter, shapePoints } from '../core/model.js';
 import { SECTORS, ST, STANDS, NUMS, neighbours, otherTier, ring, secMid, sector, setStadiumCenter } from '../core/stadium.js';
-import { $, Sheet, esc, icon, photo, toast } from '../core/ui.js';
+import { $, Sheet, badge, esc, icon, photo, themeButton, toast } from '../core/ui.js';
+import { iconUrl } from '../core/icons.js';
+import { createMascot, mascotSettings } from '../core/mascot.js';
 
 const QUICK = [
   { k: 'gate', n: 'Входы', g: '→' }, { k: 'food', n: 'Еда', g: 'Е' }, { k: 'wc', n: 'Туалеты', g: 'WC' }, { k: 'med', n: 'Медпункт', g: '+' },
@@ -14,7 +16,11 @@ export async function mountVisitor(root, api) {
   const pub = await api.published();
   const map = pub.data, stadium = !!map.stadium;
   const title = pub.venue?.name || map.name || 'Ростов Арена';
-  const quickList = QUICK.filter((q) => stadium || q.k !== 'stands');
+  // быстрые кнопки: базовые + типы меток ТТК, которые на этой карте действительно есть (регистрация, гардероб…)
+  const extra = ['registration', 'wardrobe', 'hall', 'coffee', 'stage', 'partners', 'participants'].filter((k) => map.pois.some((p) => p.cat === k)).map((k) => ({ k, n: PCATS[k].n, g: PCATS[k].g }));
+  const quickList = [...QUICK.filter((q) => stadium || q.k !== 'stands'), ...extra];
+  const quickBadge = (q) => (iconUrl(q.k === 'panos' ? 'pano' : q.k) ? badge(q.k === 'panos' ? 'pano' : q.k, '', '', 'sm')
+    : `<span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : 'var(--ink)')}">${q.g}</span>`);
   // пришли со страницы выбора карт автора — показываем дорогу обратно
   const qs = new URLSearchParams(location.search), byParam = qs.has('object') && qs.get('by');
   setStadiumCenter(map);
@@ -36,6 +42,7 @@ export async function mountVisitor(root, api) {
       <svg class="plan" hidden aria-label="План территории"></svg>
       <div class="topbar">
         <label class="search">${icon('search')}<input id="q" type="search" placeholder="Сектор, вход, кафе…" autocomplete="off" enterkeyhint="search" aria-label="Поиск по карте"><button class="iconbtn flat" id="qx" hidden aria-label="Очистить">${icon('close')}</button></label>
+        ${themeButton()}
         <a class="iconbtn admin-link" href="admin.html" aria-label="Админ-панель" title="Админ-панель для сотрудников">${icon('user')}<span>Админ-панель</span></a>
       </div>
       <div class="pano-embed" hidden></div>
@@ -64,7 +71,11 @@ export async function mountVisitor(root, api) {
 
   const S = { view: '3d', sel: null, route: null, routeFrom: null, look: null, list: null, floor: floors[0].id };
   const three = $('.three', root), svg = $('.plan', root), sheet = new Sheet($('.sheet', root));
-  const scene = new Scene3D(three, { onPick, onLook: drawMiniCone });  const plan = new Plan2D(svg, { tap: (w, hit) => { if (hit) pickRef(hit.kind === 'sector' ? 'sec:' + hit.id : hit.kind === 'stadium' ? 'stadium' : hit.id); } });
+  const scene = new Scene3D(three, { onPick, onLook: drawMiniCone });
+  // маскот ТТК: прячется за правым краем, в панорамах рассказывает о месте
+  const mascot = createMascot(root, mascotSettings(map));
+  window.addEventListener('themechange', () => { scene.setMap(map); plan.render(); }, { signal: window.__ac?.signal });
+  const plan = new Plan2D(svg, { tap: (w, hit) => { if (hit) pickRef(hit.kind === 'sector' ? 'sec:' + hit.id : hit.kind === 'stadium' ? 'stadium' : hit.id); } });
   scene.setMap(map); scene.setActive(true); scene.overview(true);
   plan.setMap(map); plan.set({ showPanos: true, hidden, floor: S.floor, ghost: false });
   if (hidden.size) scene.setHidden(hidden);
@@ -78,7 +89,7 @@ export async function mountVisitor(root, api) {
     sheet.set(`
       <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · версия карты ${pub.number}${api.demo ? ' · демо' : ''}</p>
         ${byParam ? `<a class="txt-btn" href="?by=${encodeURIComponent(byParam)}" style="align-self:flex-start">← Все карты автора</a>` : ''}</div>
-      <div class="quick">${quickList.map((q) => `<button data-quick="${q.k}"><span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : q.k === 'panos' ? 'var(--pano)' : 'var(--ink)')}">${q.g}</span>${q.n}</button>`).join('')}</div>
+      <div class="quick">${quickList.map((q) => `<button data-quick="${q.k}">${quickBadge(q)}${q.n}</button>`).join('')}</div>
       ${stadium ? `<div class="photos">
         ${[['aerial', 'Стадион и территория с высоты'], ['facade', 'Фасад и парадная лестница'], ['bowl', 'Чаша: 4 трибуны, 2 яруса'], ['seats', 'Сектора и ряды']].map(([f, c]) => `<figure><img src="${photo(f)}" alt="${c}" loading="lazy"><figcaption>${c}</figcaption></figure>`).join('')}
       </div>
@@ -86,12 +97,12 @@ export async function mountVisitor(root, api) {
       ${map.pois.length ? `<h3 class="h-sec">Важное рядом</h3><div class="list">${map.pois.slice(0, 6).map(itemPoi).join('')}</div>` : ''}
       <a class="staff-link" href="admin.html">${icon('user')}<span><b>Для сотрудников</b><span>Админ-панель: конструктор карт, команда, безопасность</span></span>${icon('chevron', 'chev')}</a>`, sheet.state === 'full' ? 'half' : undefined);
   }
-  function itemPoi(p) { return `<button class="item" data-go="${p.id}"><span class="glyph" style="background:${poiColor(map, p)}">${esc((PCATS[p.cat] || PCATS.info).g)}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || (PCATS[p.cat] || PCATS.info).n)}</span></span>${icon('chevron', 'chev')}</button>`; }
+  function itemPoi(p) { return `<button class="item" data-go="${p.id}">${badge(p.cat, poiColor(map, p), (PCATS[p.cat] || PCATS.info).g)}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || (PCATS[p.cat] || PCATS.info).n)}</span></span>${icon('chevron', 'chev')}</button>`; }
   function itemShape(s) { return `<button class="item" data-go="${s.id}"><span class="glyph sm" style="background:${s.color || map.style.cats[s.cat] || CATS[s.cat]?.c}"></span><span class="t"><b>${esc(s.name)}</b><span>${esc(s.desc || CATS[s.cat]?.n || '')}</span></span>${icon('chevron', 'chev')}</button>`; }
 
   function quick(k) {
     S.list = k; let title, html;
-    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}"><span class="glyph" style="background:var(--pano)">${icon('pano')}</span><span class="t"><b>${esc(p.name)}</b><span>${panoSub(p).replace(/^./, (c) => c.toLowerCase())} ·${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
+    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}">${badge('pano')}<span class="t"><b>${esc(p.name)}</b><span>${panoSub(p).replace(/^./, (c) => c.toLowerCase())} ·${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'stands') { title = 'Сектора'; html = SECTORS.map((s) => `<button class="item" data-go="sec:${s.id}"><span class="glyph sm mono" style="background:${map.sectors[s.id]?.color || map.style.stands[s.stand] || STANDS[s.stand].c}">${s.stand}</span><span class="t"><b>Сектор ${s.id}</b><span>${STANDS[s.stand].n} · ${s.tier === 'lower' ? 'нижний' : 'верхний'} ярус</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'parking') { title = 'Парковки'; html = map.shapes.filter((s) => s.cat === 'parking').map(itemShape).join(''); }
     else {
@@ -131,7 +142,7 @@ export async function mountVisitor(root, api) {
     sheet.set(`
       <div class="place">
         ${ph ? `<img class="place-photo" src="${ph}" alt="">` : ''}
-        <div class="place-head"><span class="glyph" style="background:${pl.color || 'var(--ink)'}">${pl.type === 'poi' ? esc((PCATS[pl.obj.cat] || PCATS.info).g) : pl.type === 'sector' ? pl.obj.stand : ''}</span>
+        <div class="place-head">${pl.type === 'poi' ? badge(pl.obj.cat, pl.color, (PCATS[pl.obj.cat] || PCATS.info).g) : pl.type === 'pano' ? badge('pano') : `<span class="glyph" style="background:${pl.color || 'var(--ink)'}">${pl.type === 'sector' ? pl.obj.stand : ''}</span>`}
           <div class="t"><h2>${esc(pl.name)}</h2><p>${esc(pl.sub)}</p></div><button class="iconbtn flat" data-act="home" aria-label="Закрыть">${icon('close')}</button></div>
         ${pl.text ? `<p class="txt">${esc(pl.text)}</p>` : ''}
         <div class="actions">
@@ -215,6 +226,7 @@ export async function mountVisitor(root, api) {
     $('.look-ui', root).hidden = true; $('.sheet', root).hidden = false; $('.topbar', root).hidden = false; $('.fabs', root).hidden = false;
     root.querySelector('.floor-pick')?.toggleAttribute('hidden', false);
     scene.exitLook(true); scene.focus(wasPlan.x, wasPlan.y, 70);
+    mascot.leave();   // вышли из панорамы — маскот снова прячется за край
   }
   function panoChips(p) {
     const nb = neighbors(map, p.id).map((q) => `<button class="chip" data-glide="${q.id}">${icon('chevron')}${esc(q.name)} · ${Math.round(dist(p, q))} м</button>`);
@@ -238,6 +250,7 @@ export async function mountVisitor(root, api) {
     scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, face || (center && Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? center : nb[0]) || center || { x: p.x + 1, y: p.y });
     scene.setPhoto(p.img || null, p.photoRot); scene.setArrows(nb); scene.preload(nb.map((q) => q.img));
     enterLookUI(p.name, panoSub(p), panoChips(p)); buildMini(); setEmbed(p);
+    mascot.guide(p.guide);   // маскот рассказывает об этом месте (текст точки задаёт админ)
   }
   function glide(id) {
     if (!S.look || S.look.type !== 'pano' || scene.anim || scene.gliding) return;
@@ -248,6 +261,7 @@ export async function mountVisitor(root, api) {
       S.look = { type: 'pano', id, plan: { x: q.x, y: q.y } };
       const nb = neighbors(map, id); scene.setArrows(nb); scene.preload(nb.map((n) => n.img));
       $('#lkName').textContent = q.name; $('#lkSub').textContent = panoSub(q); $('#lkChips').innerHTML = panoChips(q); setEmbed(q);
+      mascot.guide(q.guide);
     }, { url: q.img, rot: q.photoRot });
   }
   function stepToward(pt) {
@@ -273,8 +287,8 @@ export async function mountVisitor(root, api) {
     const P = (a) => a.map((q) => q.join(',')).join(' ');
     let h = `<svg viewBox="0 0 200 200" aria-hidden="true"><g id="mm">${site ? `<polygon points="${P(shapePoints(site))}" fill="#3a3c41"/>` : ''}${stadium ? `<polygon points="${P(ring(74))}" fill="#5a5d63"/><rect x="${ST.cx - 34}" y="${ST.cy - 52.5}" width="68" height="105" fill="#3f8f46"/>` : ''}`;
     for (const s of map.shapes) if (kindOf(s).walls && s.type === 'rect') h += `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" fill="#7b7e84"/>`;
-    for (const [i, j] of map.links) { const a = map.panos.find((p) => p.id === i), b = map.panos.find((p) => p.id === j); if (a && b) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5b92ff" stroke-width="3"/>`; }
-    for (const p of map.panos) h += `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#5b92ff"/>`;
+    for (const [i, j] of map.links) { const a = map.panos.find((p) => p.id === i), b = map.panos.find((p) => p.id === j); if (a && b) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#ff4d55" stroke-width="3"/>`; }
+    for (const p of map.panos) h += `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#ff4d55"/>`;
     h += `</g><g id="cone"><path d="M0 0L42 -20A46 46 0 0 1 42 20Z" fill="#ff3b42" fill-opacity=".45"/><circle r="6" fill="#ff3b42" stroke="#fff" stroke-width="2.5"/></g></svg>`;
     $('#mini').innerHTML = h; drawMiniCone(scene.look);
   }
@@ -313,7 +327,7 @@ export async function mountVisitor(root, api) {
     if (a === 'walk' && S.route) openPano(S.route.nodes[0].id, S.route.nodes[1] || placeOf(map, S.sel));
     if (a === 'panoNear') { const pl = placeOf(map, S.sel), np = nearestPano(map, pl); if (np) openPano(np.id, pl); }
     if (a === 'seatView') seatView(S.sel.slice(4));
-    if (a === 'cylView') { const p = placeOf(map, S.sel); if (p?.obj?.pano) import('../core/cylpano.js').then(({ openCylPano }) => openCylPano({ url: p.obj.pano, title: p.name })); }
+    if (a === 'cylView') { const p = placeOf(map, S.sel); if (p?.obj?.pano) import('../core/cylpano.js').then(({ openCylPano }) => { openCylPano({ url: p.obj.pano, title: p.name, onClose: () => mascot.leave() }); mascot.guide(p.obj.guide); }); }
     if (a === 'exitLook') exitLook();
   });
   root.addEventListener('change', (e) => {
@@ -330,7 +344,7 @@ export async function mountVisitor(root, api) {
     $('#qx').hidden = !q.value;
     const found = search(map, q.value);
     res.hidden = !q.value;
-    res.innerHTML = found.length ? `<div class="list">${found.map((p) => `<button class="item" data-go="${p.ref}"><span class="glyph sm" style="background:${p.color}">${p.type === 'sector' ? p.obj.stand : ''}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.sub)}</span></span></button>`).join('')}</div>` : '<p class="cap" style="padding:10px 0">Ничего не нашлось. Попробуйте «A105», «туалет» или «вход 3».</p>';
+    res.innerHTML = found.length ? `<div class="list">${found.map((p) => `<button class="item" data-go="${p.ref}">${p.type === 'poi' ? badge(p.obj.cat, p.color, (PCATS[p.obj.cat] || PCATS.info).g, 'sm') : `<span class="glyph sm" style="background:${p.color}">${p.type === 'sector' ? p.obj.stand : ''}</span>`}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.sub)}</span></span></button>`).join('')}</div>` : '<p class="cap" style="padding:10px 0">Ничего не нашлось. Попробуйте «A105», «туалет» или «вход 3».</p>';
   });
   q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const f = search(map, q.value)[0]; if (f) { card(f.ref); show(f.ref); res.hidden = true; q.blur(); } } });
   $('#qx').addEventListener('click', (e) => { e.preventDefault(); q.value = ''; res.hidden = true; $('#qx').hidden = true; });

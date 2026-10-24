@@ -2,7 +2,8 @@
 // Жесты: один палец — сдвиг (или инструмент), два пальца — масштаб, колесо — масштаб к курсору.
 import { CATS, PCATS, catColor, floorById, floorOf, floorStep, floorsSorted, kindOf, mapBox, poiColor, sectorColor, shapeArea, shapeBox, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, ring, secMid, secPts, sp } from './stadium.js';
-import { esc } from './ui.js';
+import { iconUrl } from './icons.js';
+import { esc, hideTip, showTip } from './ui.js';
 
 const pts = (p) => p.map((q) => `${(+q[0]).toFixed(2)},${(+q[1]).toFixed(2)}`).join(' ');
 
@@ -48,9 +49,14 @@ export class Plan2D {
       const tool = this.h.down?.(w, hit, e) === true;
       this.gesture = { tool, x0: e.clientX, y0: e.clientY, v0: { ...this.view }, s: this.px, moved: false, hit, t0: performance.now() };
     });
+    svg.addEventListener('pointerleave', hideTip);
     svg.addEventListener('pointermove', (e) => {
       const w = this.toWorld(e.clientX, e.clientY);
       this.h.hover?.(w);
+      // название метки или точки обзора — подсказкой у курсора
+      const el = !this.pointers.size && e.pointerType !== 'touch' && e.target.closest?.('[data-kind="poi"],[data-kind="pano"]');
+      const it = el && (el.dataset.kind === 'poi' ? this.map.pois : this.map.panos).find((x) => x.id === el.dataset.id);
+      if (it?.name) showTip(it.name, e.clientX, e.clientY); else hideTip();
       if (!this.pointers.has(e.pointerId)) return;
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       const g = this.gesture; if (!g) return;
@@ -160,18 +166,21 @@ export class Plan2D {
     }
     if (o.showPanos && on('panos')) {
       for (const [i, j] of m.links) { const a = m.panos.find((p) => p.id === i), b = m.panos.find((p) => p.id === j); if (a && b && (here(a) || here(b))) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--pano)" stroke-width="${fs(2.5)}" stroke-dasharray="${fs(6)} ${fs(5)}" opacity=".85" style="pointer-events:none"/>`; }
+      // точки обзора — значок 360°; название не пишем, оно всплывает при наведении
+      const pano = iconUrl('pano');
       for (const p of m.panos.filter(here)) {
-        const sel = o.sel === p.id || o.linkFrom?.() === p.id;
-        h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(13)}" fill="var(--pano)" fill-opacity=".22"/>` : ''}<circle cx="${p.x}" cy="${p.y}" r="${fs(6.5)}" fill="var(--pano)" stroke="#fff" stroke-width="${fs(2)}"/>${p.img ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(2.2)}" fill="#fff"/>` : ''}</g>`;
-        if (sel || (px < 0.35 && on('labels'))) h += `<text x="${p.x}" y="${p.y - 14 * px}" font-size="${fs(11)}" class="t-pano">${esc(p.name)}</text>`;
+        const sel = o.sel === p.id || o.linkFrom?.() === p.id, r = (sel ? 11 : 9) * px;
+        h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="var(--pano)" fill-opacity=".2"/>` : ''}
+          <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="var(--pano)" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${pano}" x="${p.x - r * 0.78}" y="${p.y - r * 0.78}" width="${r * 1.56}" height="${r * 1.56}" style="pointer-events:none"/></g>`;
       }
     }
     for (const p of on('pois') ? m.pois.filter(here) : []) {
       if (o.filter && p.cat !== o.filter) continue;
-      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 13 : 11) * px;
-      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${r * 1.5}" fill="transparent"/><circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${fs(2)}"/>
-        <text x="${p.x}" y="${p.y}" font-size="${fs(g.length > 1 ? 8 : 11)}" class="t-glyph">${esc(g)}</text></g>`;
-      if (sel || (px < 0.3 && on('labels'))) h += `<text x="${p.x + r + 4 * px}" y="${p.y}" font-size="${fs(12)}" class="t-poi">${esc(p.name)}</text>`;
+      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 14 : 12) * px, u = iconUrl(p.cat);
+      // метка — значок ТТК на белом круге (или прежний цветной кружок, если значка для типа нет); название — при наведении
+      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${r * 1.5}" fill="transparent"/>${u
+        ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="${sel ? 'var(--ink)' : 'var(--accent)'}" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${u}" x="${p.x - r * 0.68}" y="${p.y - r * 0.68}" width="${r * 1.36}" height="${r * 1.36}" style="pointer-events:none"/>`
+        : `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${fs(2)}"/><text x="${p.x}" y="${p.y}" font-size="${fs(g.length > 1 ? 8 : 11)}" class="t-glyph">${esc(g)}</text>`}</g>`;
     }
     if (o.sel?.startsWith('sec:')) { const sec = SECTORS.find((x) => x.id === o.sel.slice(4)); if (sec) h += `<polygon points="${pts(secPts(sec))}" fill="none" stroke="var(--ink)" stroke-width="${fs(2.5)}" style="pointer-events:none"/>`; }
     h += typeof o.overlay === 'function' ? o.overlay(px) : o.overlay || '';

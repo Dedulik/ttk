@@ -27,7 +27,7 @@ export const CATS = {
 };
 
 export const PCATS = {
-  info: { n: 'Информация', g: 'i', c: '#2f6fe0' },
+  info: { n: 'Информация', g: 'i', c: '#e30613' },
   food: { n: 'Еда и напитки', g: 'Е', c: '#c99700' },
   wc: { n: 'Туалет', g: 'WC', c: '#7d6bb8' },
   med: { n: 'Медпункт', g: '+', c: '#d6336c' },
@@ -36,6 +36,14 @@ export const PCATS = {
   ticket: { n: 'Кассы', g: '₽', c: '#8a5bd1' },
   transport: { n: 'Транспорт', g: 'Т', c: '#2e9e4f' },
   meet: { n: 'Место встречи', g: '★', c: '#3b3f46' },
+  // типы под значки ТТК
+  hall: { n: 'Вход в зал', g: '→', c: '#e30613' },
+  registration: { n: 'Регистрация', g: 'Р', c: '#e30613' },
+  wardrobe: { n: 'Гардероб', g: 'Г', c: '#e30613' },
+  coffee: { n: 'Кофе', g: 'К', c: '#e30613' },
+  stage: { n: 'Сцена', g: '★', c: '#e30613' },
+  partners: { n: 'Зона партнёров', g: 'П', c: '#e30613' },
+  participants: { n: 'Зона участников', g: 'У', c: '#e30613' },
   // своя точка: админ прикрепляет к ней длинное фото-панораму, посетитель смотрит её изнутри цилиндра
   custom: { n: 'Своя точка', g: '◎', c: '#0e9f8e' },
 };
@@ -281,7 +289,7 @@ export function placeOf(map, ref) {
   const s = map.shapes.find((x) => x.id === ref);
   if (s) { const c = shapeCenter(s); return { ref, type: 'shape', id: s.id, name: s.name, sub: fsub(s, (CATS[s.cat] || CATS.building).n), x: c.x, y: c.y, ...fl(s), obj: s, color: shapeColor(map, s), text: s.desc, photo: s.photo }; }
   const pn = map.panos.find((x) => x.id === ref);
-  if (pn) return { ref, type: 'pano', id: pn.id, name: pn.name, sub: fsub(pn, 'Точка обзора 360°'), x: pn.x, y: pn.y, ...fl(pn), obj: pn, color: '#2f6fe0', text: '' };
+  if (pn) return { ref, type: 'pano', id: pn.id, name: pn.name, sub: fsub(pn, 'Точка обзора 360°'), x: pn.x, y: pn.y, ...fl(pn), obj: pn, color: '#c4121c', text: '' };
   if (ref === 'stadium' && map.stadium) return { ref, type: 'stadium', id: 'stadium', name: 'Стадион «Ростов Арена»', sub: 'Поле 105 × 68 м · 4 трибуны · 2 яруса', x: map.stadium.cx, y: map.stadium.cy };
   return null;
 }

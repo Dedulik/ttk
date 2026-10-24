@@ -5,6 +5,9 @@
 //   #/security    — защита базы, резервные копии, журнал (только администратор)
 //   #/edit/<slug> — конструктор карты объекта
 import { can, createApi } from './core/api.js';
+import { applySavedTheme } from './core/ui.js';
+
+applySavedTheme();
 
 let root = document.getElementById('app');
 const api = await createApi();

@@ -4,6 +4,9 @@
 //   index.html?by=<автор>       — личная ссылка администратора: его объекты
 // Админ-панель — отдельная страница admin.html (старые ссылки #/admin ведут туда же).
 import { createApi, urlSlug } from './core/api.js';
+import { applySavedTheme } from './core/ui.js';
+
+applySavedTheme();   // светлая или тёмная — как выбрал посетитель в прошлый раз
 
 if (location.hash.startsWith('#/admin')) location.replace('admin.html');
 let root = document.getElementById('app');

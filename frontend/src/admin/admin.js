@@ -4,7 +4,9 @@ import { ROLE_NAMES, can } from '../core/api.js';
 import { CATS, KINDS, LAYERS, PALETTE, PCATS, catColor, clone, elevOf, floorById, floorOf, floorsSorted, kindOf, layersFor, visitorLayerMode, mapsEmbed, moveShape, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, shapeLayer, standColor, uid } from '../core/model.js';
 import { Plan2D } from '../core/plan2d.js';
 import { SECTORS, STANDS, ST, secMid, sector, setStadiumCenter } from '../core/stadium.js';
-import { $, Sheet, esc, fmtDate, icon, photo, toast } from '../core/ui.js';
+import { $, Sheet, badge, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
+import { iconUrl } from '../core/icons.js';
+import { DEFAULT_PHRASES, createMascot, mascotSettings } from '../core/mascot.js';
 import { HINTS, TOOLS, createTools } from './tools.js';
 
 // ---------------- редактор ----------------
@@ -37,6 +39,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       <div class="title"><b>Конструктор · ${esc(venue.name)}</b><span id="st"><i></i>Черновик</span></div>
       <button class="iconbtn flat" data-act="undo" aria-label="Отменить" title="Отменить (Ctrl+Z)">${icon('undo')}</button>
       <button class="iconbtn flat" data-act="redo" aria-label="Повторить" title="Повторить (Ctrl+Y)">${icon('redo')}</button>
+      ${themeButton('iconbtn flat')}
       <button class="iconbtn flat${state.hidden.size ? ' on' : ''}" data-act="layers" aria-label="Слои" title="Слои: что показывать на плане и в 3D">${icon('layers')}</button>
       <button class="iconbtn flat" data-act="view3d" aria-label="3D-просмотр" title="3D-просмотр">${icon('cube')}</button>
       ${isAdmin ? `<button class="btn sm primary" data-act="panel" data-p="publish">${icon('publish')}<span class="hide-s">Опубликовать</span></button>` : ''}
@@ -130,7 +133,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   function rebuildLater() { if (!scene) return; clearTimeout(rebuildT); rebuildT = setTimeout(() => scene.setMap(map), 450); }
   function toolbar() {
     const list = state.readonly ? [TOOLS.build[0]] : TOOLS[state.mode];
-    $('#tb').innerHTML = list.map((t) => `<button class="tool${t.pano ? ' pano' : ''}" data-tool="${t.id}" aria-pressed="${state.tool === t.id}" title="${t.n} (${t.key.toUpperCase()})">${icon(t.ic)}${t.n}</button>`).join('');
+    $('#tb').innerHTML = list.map((t) => `<button class="tool${t.pano ? ' pano' : ''}" data-tool="${t.id}" aria-pressed="${state.tool === t.id}" title="${t.n} (${t.key.toUpperCase()})">${t.img ? `<img class="tool-img" src="${iconUrl(t.img)}" alt="">` : icon(t.ic)}${t.n}</button>`).join('');
     svg.classList.toggle('tool-draw', state.tool !== 'select');
   }
   const seg = (name, cur, items) => `<div class="seg">${items.map(([v, n]) => `<button data-opt="${name}" data-v="${v}" aria-pressed="${String(cur) === String(v)}">${n}</button>`).join('')}</div>`;
@@ -154,6 +157,10 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   const dis = () => (state.readonly ? 'disabled' : '');
   const num = (id, v, step = 0.5, min) => `<input class="inp mono" id="${id}" type="number" step="${step}" ${min !== undefined ? `min="${min}"` : ''} value="${+(+v).toFixed(2)}" ${dis()}>`;
   const swatches = (cur, act) => `<div class="swatches">${PALETTE.map((c) => `<button class="sw" style="background:${c}" data-act="${act}" data-c="${c}" aria-pressed="${cur === c}" aria-label="Цвет ${c}" ${dis()}></button>`).join('')}<input type="color" data-color="${act}" value="${cur}" aria-label="Свой цвет" ${dis()}></div>`;
+  // рассказ маскота о месте: показывается, когда посетитель открывает панораму этой точки
+  const guideField = (o) => `<div class="field guide-field"><span class="lbl">${icon('chat')}Рассказ маскота</span>
+    <textarea class="inp" id="f-guide" rows="4" placeholder="Что маскот расскажет об этом месте. Каждая строка — новая реплика и новая поза" ${dis()}>${esc(o.guide || '')}</textarea>
+    <div class="row"><span class="cap">Печатается по букве в облаке, со звуком. Пусто — маскот молчит.</span>${o.guide ? `<button class="btn sm" data-act="mascotGuide">${icon('volume')}Послушать</button>` : ''}</div></div>`;
   const photoBlock = (url, act, label) => `${url ? `<img class="thumb" src="${url}" alt="">` : ''}${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="${act}">${icon('upload')}${url ? 'Заменить' : label}</button>${url ? `<button class="btn sm ghost" data-act="${act}Rm">Убрать</button>` : ''}</div>`}`;
 
   function inspector(keepFocus) {
@@ -191,12 +198,13 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить лестницу</button>`}`;
     } else if (s.type === 'poi') {
       const col = poiColor(map, o);
-      h = `<div class="insp-head"><span class="glyph" style="background:${col}">${esc(PCATS[o.cat]?.g || 'i')}</span><h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
+      h = `<div class="insp-head">${badge(o.cat, col, PCATS[o.cat]?.g || 'i')}<h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         ${field('Название', `<input class="inp" id="f-mname" value="${esc(o.name)}" ${dis()}>`)}
         ${field('Текст для посетителей', `<textarea class="inp" id="f-mtext" placeholder="Что увидит посетитель, нажав на метку" ${dis()}>${esc(o.text || '')}</textarea>`)}
-        <div class="field"><span class="lbl">Тип</span><div class="chips">${Object.entries(PCATS).map(([c, v]) => `<button class="opt" data-act="pcat" data-v="${c}" aria-pressed="${o.cat === c}" ${dis()}><span class="glyph sm" style="width:18px;height:18px;font-size:9px;background:${map.style.poi[c] || v.c}">${esc(v.g)}</span>${v.n}</button>`).join('')}</div></div>
+        <div class="field"><span class="lbl">Тип</span><div class="chips">${Object.entries(PCATS).map(([c, v]) => `<button class="opt" data-act="pcat" data-v="${c}" aria-pressed="${o.cat === c}" ${dis()}>${badge(c, map.style.poi[c] || v.c, v.g, 'sm xs')}${v.n}</button>`).join('')}</div></div>
         <div class="field"><span class="lbl">Цвет</span>${swatches(col, 'poiColor')}</div>
         <div class="grid3">${field('X, м', num('f-mx', o.x))}${field('Y, м', num('f-my', o.y))}${field('Уровень, м', num('f-mz', o.z || 0, 0.5, 0))}</div>
+        ${o.cat === 'custom' ? guideField(o) : ''}
         ${o.cat === 'custom' ? `<div class="field cyl-field"><span class="lbl">Панорама точки</span>
           <span class="cap">Длинное фото по кругу на 360° (например, 2:1 с камеры 360° или склейка с телефона). Оно оборачивает цилиндр, посетитель стоит в центре и поворачивается в стороны.</span>
           ${o.pano ? `<img class="thumb wide" src="${esc(o.pano)}" alt=""><button class="btn blue full" data-act="viewCyl">${icon('eye')}Посмотреть панораму</button>` : ''}
@@ -205,9 +213,10 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="del">${icon('erase')}Удалить метку</button><button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
     } else if (s.type === 'pano') {
       const nb = neighbors(map, o.id);
-      h = `<div class="insp-head"><span class="glyph" style="background:var(--pano)">${icon('pano')}</span><h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
+      h = `<div class="insp-head">${badge('pano')}<h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         ${field('Название точки', `<input class="inp" id="f-pname" value="${esc(o.name)}" ${dis()}>`)}
         <button class="btn blue full" data-act="lookPano">${icon('eye')}Посмотреть панораму</button>
+        ${guideField(o)}
         <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото.' : 'Сейчас вид строится из 3D-модели. Загрузите сферическое фото (формат 2:1) с камеры 360° или склейку с телефона.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
         ${o.img && !state.readonly ? `<div class="field rot-field"><span class="lbl">Направление фото · ${Math.round(o.photoRot || 0)}°</span>
           <span class="cap">Чтобы стрелки переходов указывали туда, где точка видна на фото: нажмите «Посмотреть панораму», повернитесь к месту на фото, где стоит соседняя точка, и нажмите её имя ниже.</span>
@@ -238,8 +247,8 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     const fname = map.floors.length > 1 ? ` · ${esc(floorById(map, state.floor).name)}` : '';
     const list = m === 'build'
       ? shapesHere.map((s) => `<button class="item" data-sel="shape:${s.id}"><span class="dot" style="background:${s.color || catColor(map, s.cat)};width:12px;height:12px"></span><span class="t"><b>${esc(s.name)}</b><span>${KINDS[s.kind]?.n || ''} · ${CATS[s.cat]?.n || ''} · ${Math.round(shapeArea(s))} м²</span></span></button>`).join('')
-      : poisHere.map((p) => `<button class="item" data-sel="poi:${p.id}"><span class="glyph sm" style="background:${poiColor(map, p)}">${esc(PCATS[p.cat]?.g || 'i')}</span><span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || PCATS[p.cat]?.n || '')}</span></span></button>`).join('')
-        + `<h3 class="h-sec" style="margin:12px 0 4px">Точки обзора</h3>` + panosHere.map((p) => `<button class="item" data-sel="pano:${p.id}"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}</span></span></button>`).join('');
+      : poisHere.map((p) => `<button class="item" data-sel="poi:${p.id}">${badge(p.cat, poiColor(map, p), PCATS[p.cat]?.g || 'i', 'sm')}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || PCATS[p.cat]?.n || '')}</span></span></button>`).join('')
+        + `<h3 class="h-sec" style="margin:12px 0 4px">Точки обзора</h3>` + panosHere.map((p) => `<button class="item" data-sel="pano:${p.id}">${badge('pano', '', '', 'sm')}<span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}</span></span></button>`).join('');
     return `<div class="insp">
       <div><h2 style="font-size:16px">${m === 'build' ? 'Построение помещений' : 'Ключевые точки и панорамы'}</h2>
       <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Сначала нарисуйте помещения инструментами слева: прямоугольник, контур, овал, стены, двери и лестницы. Потом перейдите во вкладку «Точки и панорамы».' : 'Ставьте метки (входы, кафе, туалеты), точки обзора 360° и связывайте их — по связям посетители ходят в панорамах и строят маршруты.'}</p></div>
@@ -258,6 +267,15 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       <span class="cap">Обводите схему по сетке. Подложку видят только сотрудники.</span>
       ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="underUp">${icon('image')}${own ? 'Заменить' : 'Своя подложка'}</button>${own ? '<button class="btn sm ghost" data-act="underRm">Убрать</button>' : ''}</div>`}</div>`;
   }
+  // ---------- проверка маскота прямо в конструкторе (с текущими, ещё не опубликованными настройками) ----------
+  let tm = null;
+  function testMascot(refreshOnly) {
+    if (refreshOnly) { tm?.setSettings(mascotSettings(map)); return tm; }
+    if (!tm) { tm = createMascot(root, mascotSettings(map)); window.__ac?.signal.addEventListener('abort', () => tm.destroy()); }
+    else tm.setSettings(mascotSettings(map));
+    return tm;
+  }
+
   // ---------- буфер обмена: Ctrl+C / Ctrl+V / Ctrl+D ----------
   // Хранится в браузере, поэтому объект можно скопировать в одном конструкторе и вставить в другом.
   const LISTS = { shape: 'shapes', wall: 'walls', door: 'doors', stairs: 'stairs', poi: 'pois', pano: 'panos' };
@@ -358,11 +376,12 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
 
   function panel(name) {
     state.panel = name;
-    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты', floors: 'Этажи', visitors: 'Слои для посетителей' }[name]}</h2></div>`;
+    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты', floors: 'Этажи', visitors: 'Слои для посетителей', mascot: 'Маскот' }[name]}</h2></div>`;
     if (name === 'menu') {
       const items = [
         isAdmin && ['publish', 'publish', 'Публикация', 'Выпустить черновик для посетителей'],
         ['versions', 'history', 'История версий', isAdmin ? 'Посмотреть и откатить' : 'Посмотреть'],
+        ['mascot', 'chat', 'Маскот', 'Размер, громкость, фразы приветствия'],
         ['floors', 'layers', 'Этажи', `${map.floors.length} · добавить, переименовать, задать высоту`],
         ['visitors', 'eye', 'Слои для посетителей', 'Что посетитель может видеть и включать'],
         ['colors', 'palette', 'Цвета карты', hasStadium() ? 'Трибуны, типы объектов и меток' : 'Типы объектов и меток'],
@@ -403,6 +422,16 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
           <span class="cap">${count(f)} объектов</span>
           ${state.readonly || f.id === groundId() ? '' : `<button class="iconbtn flat" data-act="delFloor" data-id="${f.id}" aria-label="Удалить этаж">${icon('erase')}</button>`}</div>`).join('')}</div>
         ${state.readonly ? '' : `<button class="btn dark" data-act="addFloor">${icon('layers')}Добавить этаж сверху</button>`}`;
+    }
+    if (name === 'mascot') {
+      const ms = mascotSettings(map);
+      h += `<p class="cap" style="margin:0">Маскот ТТК прячется за правым краем карты. По нажатию выходит и здоровается случайной фразой из списка, а в панорамах рассказывает о месте — текст пишется у каждой точки обзора («Рассказ маскота»). Изменения увидят после публикации.</p>
+        <label class="row nowrap" style="justify-content:space-between"><span>Показывать маскота посетителям</span><input type="checkbox" class="switch" id="f-mascot-on" ${ms.enabled ? 'checked' : ''} ${dis()}></label>
+        <div class="field"><span class="lbl">Размер на экране · <b id="ms-size">${Math.round(ms.size * 100)}%</b></span><input type="range" id="f-mascot-size" min="0.5" max="2" step="0.05" value="${ms.size}" ${dis()}></div>
+        <div class="field"><span class="lbl">${icon('volume')}Громкость голоса · <b id="ms-vol">${Math.round(ms.volume * 100)}%</b></span><input type="range" id="f-mascot-vol" min="0" max="1" step="0.05" value="${ms.volume}" ${dis()}></div>
+        <div class="field"><span class="lbl">Фразы приветствия · по одной на строку, выбираются случайно</span>
+          <textarea class="inp" id="f-mascot-phrases" rows="9" ${dis()}>${esc(ms.phrases.join('\n'))}</textarea></div>
+        <div class="row"><button class="btn sm dark" data-act="mascotTest">${icon('chat')}Проверить приветствие</button>${state.readonly ? '' : '<button class="btn sm ghost" data-act="mascotReset">Вернуть стандартные фразы</button>'}</div>`;
     }
     if (name === 'visitors') {
       const opt = (k, v, n) => `<option value="${v}" ${visitorLayerMode(map, k) === v ? 'selected' : ''}>${n}</option>`;
@@ -446,6 +475,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       const { Scene3D } = await import('../core/scene3d.js');
       scene = new Scene3D(three, { onPick: pick3d });
       scene.setHidden(state.hidden);
+      window.addEventListener('themechange', () => scene.setMap(map), { signal: window.__ac?.signal });
       if (map.floors.length > 1) scene.topFloor = state.floor;
     }
     svg.toggleAttribute('hidden', v !== '2d'); three.hidden = v !== '3d';
@@ -540,6 +570,9 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'unlink') ed.change(() => { map.links = map.links.filter((l) => !(l.includes(s.id) && l.includes(t.dataset.id))); }, 'Переход убран');
     if (a === 'photo') upload((url) => (o.photo = url));
     if (a === 'photoRm') ed.change(() => delete o.photo);
+    if (a === 'mascotTest') { testMascot().greet(); return; }
+    if (a === 'mascotGuide' && o) { testMascot().guide(o.guide); return; }
+    if (a === 'mascotReset') { ed.change(() => { map.mascot = { ...(map.mascot || {}), phrases: [...DEFAULT_PHRASES] }; }, 'Стандартные фразы возвращены'); testMascot(true); panel('mascot'); return; }
     if (a === 'rotPhoto') { ed.change(() => { o.photoRot = (((o.photoRot || 0) + +t.dataset.d) % 360 + 360) % 360; }); scene?.setPhotoRot(o.photoRot); }
     if (a === 'alignTo') {
       // сейчас в центре экрана то место фото, где видна соседняя точка: поворачиваем фото так, чтобы оно оказалось ровно по направлению на неё
@@ -612,6 +645,14 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   root.addEventListener('input', (e) => {
     const t = e.target, o = ed.find(state.sel);
     if (t.id === 'f-under') { state.underOp = +t.value; redraw(); return; }
+    if (['f-mascot-size', 'f-mascot-vol', 'f-mascot-phrases'].includes(t.id) && !state.readonly) {
+      if (!snapped) { ed.snapshot(); snapped = true; }
+      map.mascot = { ...(map.mascot || {}) };
+      if (t.id === 'f-mascot-size') { map.mascot.size = +t.value; $('#ms-size').textContent = Math.round(t.value * 100) + '%'; }
+      if (t.id === 'f-mascot-vol') { map.mascot.volume = +t.value; $('#ms-vol').textContent = Math.round(t.value * 100) + '%'; }
+      if (t.id === 'f-mascot-phrases') map.mascot.phrases = t.value.split('\n').map((x) => x.trim()).filter(Boolean);
+      markDirty(); testMascot(true); return;
+    }
     if ((t.dataset.flname || t.dataset.flelev) && !state.readonly) {
       const f = map.floors.find((x) => x.id === (t.dataset.flname || t.dataset.flelev)); if (!f) return;
       if (!snapped) { ed.snapshot(); snapped = true; }
@@ -639,7 +680,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (!state.sel || t.type === 'checkbox') return;
     if (!snapped) { ed.snapshot(); snapped = true; }
     const v = t.value, n = +v, ok = v !== '' && !Number.isNaN(n);
-    const map1 = { 'f-name': ['name'], 'f-desc': ['desc'], 'f-mname': ['name'], 'f-mtext': ['text'], 'f-pname': ['name'] };
+    const map1 = { 'f-name': ['name'], 'f-desc': ['desc'], 'f-mname': ['name'], 'f-mtext': ['text'], 'f-pname': ['name'], 'f-guide': ['guide'] };
     if (map1[t.id]) { o[map1[t.id][0]] = v; const h2 = $('.insp-head h2', root); if (h2 && /name/.test(t.id)) h2.textContent = v; }
     if (t.id === 'f-stext') map.sectors[state.sel.id] = { ...map.sectors[state.sel.id], text: v };
     if (t.id === 'f-pembed') { if (v.trim()) o.embed = mapsEmbed(v) || v.trim(); else delete o.embed; }
@@ -654,6 +695,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   root.addEventListener('change', async (e) => {
     const t = e.target;
     if (t.id === 'f-real') ed.change(() => { map.style.realSeats = t.checked; });
+    if (t.id === 'f-mascot-on' && !state.readonly) { ed.change(() => { map.mascot = { ...(map.mascot || {}), enabled: t.checked }; }, t.checked ? 'Маскот включён' : 'Маскот выключен'); testMascot(true); }
     if (t.dataset.layer) { state.hidden[t.checked ? 'delete' : 'add'](t.dataset.layer); applyLayers(); layersPop(); }
     if (t.dataset.vl && !state.readonly) { const k = t.dataset.vl, v = t.value; ed.change(() => { if (v === 'on') delete map.visitorLayers[k]; else map.visitorLayers[k] = v; }, 'Сохранено — посетители увидят после публикации'); }
     if (t.id === 'f-objfloor' && !state.readonly) {
