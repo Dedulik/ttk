@@ -6,6 +6,8 @@ import { SECTORS, ST, STANDS, NUMS, neighbours, otherTier, ring, secMid, sector,
 import { $, Sheet, badge, esc, icon, photo, themeButton, toast } from '../core/ui.js';
 import { iconUrl, pointIconUrl } from '../core/icons.js';
 import { createMascot, mascotSettings, setSound, soundOn } from '../core/mascot.js';
+import { playTransition } from '../core/transition.js';
+import { SUGGEST, answer } from './assistant.js';
 
 const LOADER_GIF = new URL('../../assets/mascot/full.gif', import.meta.url).href;
 const PIXEL = new URL('../../assets/icons/pixel.png', import.meta.url).href;
@@ -29,10 +31,12 @@ export async function mountVisitor(root, api) {
   pub ||= await api.published();
   const map = pub.data, stadium = !!map.stadium;
   const visPois = map.pois.filter((p) => p.cat !== 'quest');
-  const title = pub.venue?.name || map.name || 'Ростов Арена';
+  const title = pub.venue?.name || map.name || 'Манеж ДГТУ';
   // быстрые кнопки: базовые + типы меток ТТК, которые на этой карте действительно есть (регистрация, гардероб…)
   const extra = ['registration', 'wardrobe', 'hall', 'coffee', 'stage', 'partners', 'participants'].filter((k) => map.pois.some((p) => p.cat === k)).map((k) => ({ k, n: PCATS[k].n, g: PCATS[k].g }));
-  const quickList = [...QUICK.filter((q) => stadium || q.k !== 'stands'), ...extra];
+  // на стадионе — полный набор; в манеже и других зданиях — только то, что на карте реально есть
+  const has = (k) => k === 'panos' ? map.panos.length : k === 'parking' ? map.shapes.some((x) => x.cat === 'parking') : map.pois.some((x) => x.cat === k) || (k === 'gate' && map.shapes.some((x) => x.cat === 'entrance')) || (k === 'food' && map.shapes.some((x) => x.cat === 'food'));
+  const quickList = [...QUICK.filter((q) => (stadium ? true : q.k !== 'stands' && has(q.k))), ...extra];
   const quickBadge = (q) => (iconUrl(q.k === 'panos' ? 'pano' : q.k) ? badge(q.k === 'panos' ? 'pano' : q.k, '', '', 'sm')
     : `<span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : 'var(--ink)')}">${q.g}</span>`);
   // пришли со страницы выбора карт автора — показываем дорогу обратно
@@ -60,8 +64,9 @@ export async function mountVisitor(root, api) {
       <div class="three"></div>
       <svg class="plan" hidden aria-label="План территории"></svg>
       <div class="topbar">
-        <label class="search">${icon('search')}<input id="q" type="search" placeholder="Сектор, вход, кафе…" autocomplete="off" enterkeyhint="search" aria-label="Поиск по карте"><button class="iconbtn flat" id="qx" hidden aria-label="Очистить">${icon('close')}</button></label>
+        <label class="search">${icon('search')}<input id="q" type="search" placeholder="${stadium ? 'Сектор, вход, кафе…' : 'Зал, вход, кафе…'}" autocomplete="off" enterkeyhint="search" aria-label="Поиск по карте"><button class="iconbtn flat" id="qx" hidden aria-label="Очистить">${icon('close')}</button></label>
         ${themeButton()}
+        <button class="iconbtn ask-btn" data-act="ask" aria-label="Спросить маскота" title="Спросить маскота: где туалет, как пройти…">${icon('chat')}</button>
         <button class="iconbtn" data-act="sound" aria-pressed="false" aria-label="Звук" title="Звук маскота">${icon('mute')}</button>
         <a class="iconbtn admin-link" href="admin.html" aria-label="Войти" title="Вход и регистрация: личный кабинет, «Пиксельная охота», админ-панель для сотрудников">${icon('user')}<span>Войти</span></a>
       </div>
@@ -119,6 +124,7 @@ export async function mountVisitor(root, api) {
       <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · ${pub.draft ? 'черновик, ещё не опубликован' : 'версия карты ' + pub.number}${api.demo ? ' · демо' : ''}</p>
         ${byParam ? `<a class="txt-btn" href="?by=${encodeURIComponent(byParam)}" style="align-self:flex-start">← Все карты автора</a>` : ''}</div>
       ${lastPano() ? `<button class="item resume" data-pano="${lastPano().id}">${badge('pano', '', '', 'sm', pointIconUrl(lastPano(), 'pano'))}<span class="t"><b>Продолжить с «${esc(lastPano().name)}»</b><span>Последняя открытая панорама</span></span>${icon('chevron', 'chev')}</button>` : ''}
+      <button class="ask-card" data-act="ask">${icon('chat')}<span><b>Спросите маскота</b><span>«Где туалет?», «Как пройти на регистрацию?» — покажу на карте и проложу маршрут</span></span></button>
       ${questCard()}
       <div class="quick">${quickList.map((q) => `<button data-quick="${q.k}">${quickBadge(q)}${q.n}</button>`).join('')}</div>
       ${stadium ? `<div class="photos">
@@ -323,6 +329,21 @@ export async function mountVisitor(root, api) {
     const q = map.panos.find((x) => x.id === id);
     if (!q) return toast('Переход ведёт на точку, которой уже нет');
     S.busy = true; const tok = ++S.tok;
+    // у перехода есть видео прохода: показываем его, а следующее фото тем временем грузится
+    const from = map.panos.find((x) => x.id === S.look.id), video = !noPhoto && from?.videos?.[id];
+    if (video) {
+      scene.setArrows([]); setEmbed(null);
+      const tv = playTransition(video, { title: `${from.name} → ${q.name}`, sound: soundOn(), host: root.querySelector('.vis') });
+      const tex = q.img ? scene.tryTex(q.img) : Promise.resolve(null);
+      await tv.done;
+      if (tok !== S.tok || !S.look) { tv.close(); return; }
+      await tex;
+      S.busy = false;
+      // смотрим дальше по ходу движения — как в конце видео
+      openPano(id, { x: q.x + (q.x - from.x), y: q.y + (q.y - from.y) });
+      setTimeout(tv.close, 120);
+      return;
+    }
     let url = noPhoto ? null : q.img || null;
     if (url) {
       // сначала дожидаемся фото следующей точки — так между панорамами не мелькает чёрный экран или 3D-модель
@@ -370,6 +391,34 @@ export async function mountVisitor(root, api) {
       if (navigator.share) await navigator.share({ title: `${name} · ${title}`, url });
       else { await navigator.clipboard.writeText(url); toast('Ссылка на панораму скопирована'); }
     } catch (e) { if (e?.name !== 'AbortError') toast('Скопируйте адрес из строки браузера', 4000); }
+  }
+
+  // ---------- «Спроси маскота»: помощник как бот, но прямо в карте ----------
+  const chat = [];
+  function askSheet(focus = true) {
+    S.list = 'ask';
+    const row = (m) => m.me ? `<div class="msg me">${esc(m.text)}</div>`
+      : `<div class="msg bot"><p>${esc(m.text)}</p>${(m.items || []).map((it) => `<div class="msg-item"><span class="t"><b>${esc(it.name)}</b><span>${esc(it.sub || '')}${it.d !== undefined ? ` · ~${Math.max(5, Math.round(it.d / 5) * 5)} м` : ''}</span></span>
+          <span class="row nowrap">${it.type === 'pano' ? `<button class="btn sm primary" data-pano="${it.id}">${icon('pano')}Открыть</button>` : `<button class="btn sm" data-go="${esc(it.ref)}">${icon('target')}На карте</button><button class="btn sm primary" data-routeto="${esc(it.ref)}">${icon('route')}Маршрут</button>`}</span></div>`).join('')}
+          ${m.act === 'leaders' ? '<button class="btn sm" data-act="leaders">Таблица лидеров</button>' : ''}</div>`;
+    sheet.set(`<div class="row nowrap"><button class="iconbtn flat" data-act="home" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">Спросите маскота</h2></div>
+      <div class="chat" id="chatLog">${chat.length ? chat.map(row).join('') : `<div class="msg bot"><p>Привет! Я знаю, где что находится в «${esc(title)}». Напишите вопрос или выберите подсказку.</p></div>`}</div>
+      <div class="chips ask-sug">${SUGGEST.filter((x) => questItems.length || !/охот/.test(x)).map((x) => `<button class="opt" data-ask="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+      <form class="ask-form" id="askF"><input class="inp" id="askQ" placeholder="Например: где гардероб?" autocomplete="off" enterkeyhint="send" maxlength="200" aria-label="Вопрос маскоту"><button class="btn primary" aria-label="Спросить">${icon('chevron')}</button></form>`, 'full');
+    const log = $('#chatLog', root); log.scrollTop = log.scrollHeight;
+    if (focus && matchMedia('(pointer: fine)').matches) $('#askQ', root)?.focus();
+  }
+  function ask(text) {
+    text = String(text || '').trim(); if (!text) return;
+    // где посетитель: в панораме — там, где стоит; иначе считаем от главного входа
+    const gate = map.pois.find((p) => p.cat === 'gate') || map.shapes.find((s) => s.cat === 'entrance');
+    const here = S.look?.plan || lastPano(), from = here || (gate && placeOf(map, gate.id));
+    const r = answer(map, text, { title, description: pub.venue?.description, from, fromLabel: here ? 'от вас' : 'от входа', quest: questItems.length ? { found: found.size, total: questItems.length } : null });
+    chat.push({ me: true, text }, r);
+    if (chat.length > 40) chat.splice(0, chat.length - 40);
+    askSheet(false);
+    // на компьютере маскот выходит и отвечает в облаке; на телефоне облако закрыло бы чат — ответ только в чате
+    if (!matchMedia('(max-width: 600px)').matches) mascot.guide(r.text);
   }
 
   // ---------- «Пиксельная охота» ----------
@@ -450,8 +499,11 @@ export async function mountVisitor(root, api) {
 
   // ---------- события ----------
   root.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-act],[data-go],[data-quick],[data-pano],[data-glide],[data-seat],[data-floor]'); if (!t) return;
+    const t = e.target.closest('[data-act],[data-go],[data-quick],[data-pano],[data-glide],[data-seat],[data-floor],[data-ask],[data-routeto]'); if (!t) return;
     const a = t.dataset.act;
+    if (t.dataset.ask) return ask(t.dataset.ask);
+    if (t.dataset.routeto) { if (S.look) exitLook(); card(t.dataset.routeto); show(t.dataset.routeto); routeSheet(); return; }
+    if (a === 'ask') { if (S.look) exitLook(); return askSheet(); }
     if (t.dataset.floor) return setFloor(t.dataset.floor);
     if (t.dataset.go) { card(t.dataset.go); show(t.dataset.go); $('#res').hidden = true; return; }
     if (t.dataset.quick) return quick(t.dataset.quick);
@@ -479,6 +531,10 @@ export async function mountVisitor(root, api) {
     if (a === 'ldSkip') ldAct.skip?.();
   });
   document.addEventListener('fullscreenchange', () => root.querySelectorAll('[data-act="fullscreen"]').forEach((b) => b.setAttribute('aria-pressed', !!document.fullscreenElement)), { signal: window.__ac?.signal });
+  root.addEventListener('submit', (e) => {
+    if (e.target.id !== 'askF') return;
+    e.preventDefault(); const inp = $('#askQ', root); ask(inp.value); inp.value = '';
+  });
   root.addEventListener('change', (e) => {
     if (e.target.id === 'rFrom') { S.routeFrom = e.target.value; routeSheet(); }
     if (e.target.id === 'lySeats') { map.style.realSeats = e.target.checked; scene.setMap(map); }

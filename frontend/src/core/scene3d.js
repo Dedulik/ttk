@@ -197,8 +197,7 @@ export class Scene3D {
           roof.userData.ref = s.id; roof.userData.roofOf = s.id; roof.castShadow = true;
         }
       }
-      // мелкие комнаты подписываем только вблизи, иначе подписи админблока слипаются
-      if (s.name && on('labels')) { const l = this.label(s.name, { px: 12, maxDist: k.walls ? Math.max(140, Math.min(650, Math.max(b.w, b.h) * 6)) : Math.max(220, Math.min(520, b.w * 4)) }); l.position.copy(W(c.x, c.y, z0 + (s.height || k.height || 0) + 3)); l.userData.ref = s.id; this.groups.labels.add(l); }
+      // названия зон не висят над моделью — всплывают подсказкой при наведении (hoverTip)
     }
     // у соседних помещений общая стена приходит дважды — вторую копию не строим, иначе две грани в одной плоскости дрожат;
     // частично совпадающие стены разводим по глубине (polygonOffset) — так одна из граней стабильно «побеждает»
@@ -420,7 +419,11 @@ export class Scene3D {
   get on() { const h = this.hidden || new Set(); return (k) => !h.has(k); }
 
   // ---------- камера: обзор ----------
-  overview(now) { const k = this.span || 1; this.flyTo(W(C.x, C.y), new THREE.Vector3(-150 * k, 330 * k, 360 * k), now); }
+  overview(now) {
+    // на узком (вертикальном) экране телефона отходим дальше, чтобы объект поместился по ширине
+    const a = this.camera.aspect || 1, k = (this.span || 1) * (a < 1 ? Math.min(2.2, 0.85 / a) : 1);
+    this.flyTo(W(C.x, C.y), new THREE.Vector3(-150 * k, 330 * k, 360 * k), now);
+  }
   /** Точка плана (метры) под позицией камеры. */
   planOf(v) { return { x: v.x + C.x, y: v.z + C.y }; }
   stadiumView() { this.flyTo(W(ST.cx, ST.cy, 6), new THREE.Vector3(-150, 125, 170)); }
@@ -514,10 +517,12 @@ export class Scene3D {
       const ux = Number.isFinite(it.yaw) ? Math.cos(it.yaw) : dx / L, uy = Number.isFinite(it.yaw) ? Math.sin(it.yaw) : dy / L;
       g.userData.to = it.id;
       const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-PI / 2);
-      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
-      g.add(disc, arrow); g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * 2.7, -this.look.pos.y + 0.25 + Math.max(0, this.look.pos.y - 1.6), uy * 2.7)));
-      const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 11, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.7, 0); g.add(l);
+      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe30613, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(0.55); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.42, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
+      // стрелка стала меньше, а зона нажатия осталась прежней — невидимый круг побольше
+      const hit = new THREE.Mesh(new THREE.CircleGeometry(1.05, 24), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })); hit.rotation.x = -PI / 2;
+      g.add(hit, disc, arrow); g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * 3.2, -this.look.pos.y + 0.25 + Math.max(0, this.look.pos.y - 1.6), uy * 2.7)));
+      const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 10, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.35, 0); g.add(l);
       this.groups.arrows.add(g);
     }
   }
@@ -582,7 +587,15 @@ export class Scene3D {
     const ray = new THREE.Raycaster(); ray.setFromCamera(v, this.camera);
     const pools = (this.look ? [this.groups.quest, this.groups.pois] : [this.groups.pois, this.groups.panos]).filter((g) => g.visible);
     const hit = ray.intersectObjects(pools, true).find((h) => h.object.visible !== false && h.object.userData.tip);
-    if (hit) { showTip(hit.object.userData.tip, cx, cy); this.renderer.domElement.style.cursor = 'pointer'; }
+    let tip = hit?.object.userData.tip;
+    if (!tip && !this.look && this.groups.world.visible) {
+      // зона или помещение под курсором: ближайший объект модели, у которого есть ссылка на фигуру карты
+      let o = ray.intersectObjects([this.groups.world], true).find((h) => h.object.visible !== false)?.object;
+      while (o && !o.userData.ref) o = o.parent;
+      const s = o && this.map.shapes.find((x) => x.id === o.userData.ref && x.cat !== 'plaza');
+      tip = s?.name;
+    }
+    if (tip) { showTip(tip, cx, cy); this.renderer.domElement.style.cursor = 'pointer'; }
     else { hideTip(); this.renderer.domElement.style.cursor = ''; }
   }
   tap(cx, cy) {

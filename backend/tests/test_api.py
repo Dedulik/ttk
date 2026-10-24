@@ -190,12 +190,12 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(c.get(f"/api/venues/{slug}/map").get_json()["venue"]["name"], "Торговый центр")
         # личная ссылка администратора: посетитель видит только его опубликованные объекты
         by = c.get("/api/venues/by/admin").get_json()
-        self.assertEqual(sorted(v["slug"] for v in by["venues"]), sorted([SLUG, slug]))
+        self.assertEqual(sorted(v["slug"] for v in by["venues"]), sorted([SLUG, slug, "manezh-dgtu"]))
         self.assertEqual(c.patch("/api/auth/me", json={"handle": "Плохой адрес"}, headers=admin).status_code, 422)
         self.assertEqual(c.patch("/api/auth/me", json={"handle": "editor"}, headers=admin).status_code, 409)
         c.patch("/api/auth/me", json={"handle": "ivan-arena"}, headers=admin)
         self.assertEqual(c.get("/api/venues/by/admin").status_code, 404)
-        self.assertEqual(len(c.get("/api/venues/by/ivan-arena").get_json()["venues"]), 2)
+        self.assertEqual(len(c.get("/api/venues/by/ivan-arena").get_json()["venues"]), 3)
         # копия и удаление с подтверждением
         cp = c.post("/api/venues", json={"name": "Копия", "start": "copy", "source": SLUG}, headers=admin).get_json()
         self.assertEqual(c.delete(f"/api/venues/{cp['slug']}", json={}, headers=admin).status_code, 422)
@@ -276,6 +276,7 @@ class ApiTest(unittest.TestCase):
             {"id": "q1", "name": "Пиксель", "cat": "quest", "x": 5, "y": 5}, {"id": "q2", "name": "Пиксель 2", "cat": "quest", "x": 6, "y": 6},
         ]
         data["panos"][0]["embed"] = '"><script>alert(1)</script>'
+        data["panos"][0]["videos"] = {"x": "javascript:alert(1)", "y": "/uploads/" + "a" * 32 + ".mp4"}
         r = c.put(f"/api/venues/{SLUG}/draft", json={"data": data, "base_revision": rev}, headers=admin)
         self.assertEqual(r.status_code, 200, r.get_json())
         saved = r.get_json()["data"]
@@ -283,6 +284,7 @@ class ApiTest(unittest.TestCase):
         self.assertNotIn("photo", x1)                    # опасная ссылка не сохранилась
         self.assertNotIn("color", x1)
         self.assertNotIn("embed", saved["panos"][0])
+        self.assertEqual(saved["panos"][0]["videos"], {"y": "/uploads/" + "a" * 32 + ".mp4"})
         self.assertEqual(x1["name"], "<img src=x onerror=alert(1)>")   # текст хранится как есть — экранируется при выводе
         bad = dict(saved, pois=saved["pois"] + [{"id": 'bad id"', "name": "x", "cat": "info", "x": 0, "y": 0}])
         self.assertEqual(c.put(f"/api/venues/{SLUG}/draft", json={"data": bad, "base_revision": r.get_json()["revision"]}, headers=admin).status_code, 422)
@@ -313,6 +315,15 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(up(png_header(1024, 512), "pano360").status_code, 422)       # слишком маленькая
         self.assertEqual(up(png_header(40000, 20000)).status_code, 415)               # больше 16384
         self.assertEqual(up(png_header(800, 600)).get_json()["width"], 800)
+        # видео переходов: только настоящие MP4 / WebM
+        def vid(data, mime, name):
+            return c.post("/api/uploads", data={"file": (io.BytesIO(data), name, mime), "kind": "video"}, headers=editor, content_type="multipart/form-data")
+        mp4 = vid(bytes.fromhex("00000018") + b"ftypmp42" + bytes(64), "video/mp4", "walk.mp4")
+        self.assertEqual(mp4.status_code, 201)
+        self.assertTrue(mp4.get_json()["url"].endswith(".mp4"))
+        self.assertEqual(vid(bytes.fromhex("1a45dfa3") + bytes(64), "video/webm", "walk.webm").status_code, 201)
+        self.assertEqual(vid(b"<html>not a video</html>", "video/mp4", "x.mp4").status_code, 415)
+        self.assertEqual(vid(png_header(64, 48), "image/png", "x.png").status_code, 415)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 // Админ-панель: вход, объекты (конструктор с нуля), личный кабинет, команда и администраторы, безопасность.
-import { ROLE_NAMES, authorLink, can, isStaff, objectLink } from '../core/api.js';
+import { DEFAULT_SLUG, ROLE_NAMES, authorLink, can, isStaff, objectLink } from '../core/api.js';
 import { $, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
 
 const ACTIONS = {
@@ -88,7 +88,7 @@ export async function cabinet(root, api, user, section) {
   root.innerHTML = `
   <div class="cab">
     <aside class="cab-side">
-      <a class="cab-brand" href="${staff ? '#/' : 'index.html'}"><span class="mark">РА</span><span><b>${staff ? 'Админ-панель' : 'Кабинет'}</b><span>Карта пространства</span></span></a>
+      <a class="cab-brand" href="${staff ? '#/' : 'index.html'}"><span class="mark">МД</span><span><b>${staff ? 'Админ-панель' : 'Кабинет'}</b><span>Карта пространства</span></span></a>
       <nav class="cab-nav">${Object.entries(SECTIONS).filter(([, v]) => allowed(v)).map(([k, v]) => `<a href="#/${k === 'objects' ? '' : k}" aria-current="${k === section ? 'page' : 'false'}">${icon(v.ic)}<span>${v.n}</span></a>`).join('')}</nav>
       <div class="cab-me">
         <span class="avatar">${initial(user)}</span><span class="t"><b>${esc(user.name || user.email)}</b><span>${ROLE_NAMES[user.role]}${api.demo ? ' · демо' : ''}</span></span>
@@ -120,7 +120,7 @@ export async function cabinet(root, api, user, section) {
 
   // ---------- объекты ----------
   async function objects() {
-    const all = await api.venues(), mine = all.filter((v) => v.owner?.handle === user.handle);
+    const all = (await api.venues()).sort((a, b) => (b.slug === DEFAULT_SLUG) - (a.slug === DEFAULT_SLUG)), mine = all.filter((v) => v.owner?.handle === user.handle);
     let showAll = !isAdmin || !mine.length;
     if (isAdmin) $('#headActs').innerHTML = `<button class="btn primary" data-act="newObj">${icon('rect')}Новый объект</button>`;
     const myLink = user.handle ? authorLink(user.handle) : null;

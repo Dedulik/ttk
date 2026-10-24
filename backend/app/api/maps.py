@@ -93,6 +93,7 @@ def who(user_id):
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 PANO_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 URL_RE = re.compile(r"^(/uploads/[0-9a-f]{32}\.(jpg|png|webp)|assets/[A-Za-z0-9_/-]+\.(jpg|png|webp))$")
+VIDEO_RE = re.compile(r"^(/uploads/[0-9a-f]{32}\.(mp4|webm)|assets/[A-Za-z0-9_/-]+\.(mp4|webm))$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
 ICON_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")         # ключ значка из набора
 EMBED_RE = re.compile(r"^https://(www\.google\.[a-z.]{2,12}/maps/embed\?[^\s\"'<>]{1,2000}|www\.youtube-nocookie\.com/embed/[\w-]{11}(\?[\w=&-]{0,100})?)$")
@@ -110,7 +111,8 @@ def sanitize(node, path=""):
                     raise ApiError(422, "Слишком длинный текст в карте (больше 8000 символов)")
                 bad = ((k in URL_KEYS and v and not URL_RE.match(v)) or (k == "embed" and v and not EMBED_RE.match(v))
                        or ((k == "color" or path.startswith("style.")) and v and not COLOR_RE.match(v))
-                       or (k == "icon" and not ICON_RE.match(v)))
+                       or (k == "icon" and not ICON_RE.match(v))
+                       or (path.endswith("videos.") and not VIDEO_RE.match(v)))
                 if bad:
                     del node[k]          # чужие адреса, javascript:, «"><script» и т.п. — просто не сохраняем
             elif isinstance(v, float) and v != v:

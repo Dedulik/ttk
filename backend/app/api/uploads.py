@@ -1,4 +1,4 @@
-"""Фото объектов, подложки, иконки и панорамы 360° (эквиректангулярные, соотношение 2:1).
+"""Фото объектов, подложки, иконки, панорамы 360° (эквиректангулярные, 2:1) и видео переходов между точками (MP4, WebM).
 
 Проверки на сервере: тип по содержимому файла (а не по имени), размер, разрешение картинки,
 для панорам 360° — пропорция 2:1. Файл сохраняется под случайным именем, отдаётся с nosniff."""
@@ -16,6 +16,23 @@ bp = Blueprint("uploads", __name__, url_prefix="/api/uploads")
 ALLOWED = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAGIC = {".jpg": b"\xff\xd8", ".png": b"\x89PNG", ".webp": b"RIFF"}
 MAX_SIDE = 16384
+VIDEOS = {"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mp4"}
+
+
+def video_ok(data: bytes, ext: str) -> bool:
+    """MP4 — блок «ftyp» в начале файла, WebM — заголовок EBML."""
+    return data[4:8] == b"ftyp" if ext == ".mp4" else data[:4] == bytes.fromhex("1a45dfa3")
+
+
+def save_file(data: bytes, ext: str, f) -> tuple[int, str]:
+    folder = Path(current_app.config["UPLOAD_DIR"])
+    folder.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex + ext
+    (folder / name).write_bytes(data)
+    uid = run("INSERT INTO uploads (filename, stored_as, mime, size, uploaded_by, created_at) VALUES (?,?,?,?,?,?)",
+              (f.filename or name)[:200], name, f.mimetype, len(data), g.user["id"], now())
+    get_db().commit()
+    return uid, name
 
 
 def image_size(data: bytes, ext: str):
@@ -52,8 +69,18 @@ def upload():
     f = request.files.get("file")
     if not f:
         raise ApiError(422, "Файл не передан")
-    ext = ALLOWED.get(f.mimetype or "")
     data = f.read()
+    if request.form.get("kind") == "video":
+        # видео перехода между точками обзора
+        ext = VIDEOS.get(f.mimetype or "")
+        limit = current_app.config["MAX_VIDEO_MB"]
+        if not ext or not video_ok(data, ext):
+            raise ApiError(415, "Видео перехода — только MP4 (H.264) или WebM")
+        if len(data) > limit * 1024 * 1024:
+            raise ApiError(413, f"Видео больше {limit} МБ — сократите или сожмите его")
+        uid, name = save_file(data, ext, f)
+        return {"id": uid, "url": f"/uploads/{name}", "filename": f.filename, "size": len(data)}, 201
+    ext = ALLOWED.get(f.mimetype or "")
     if not ext or not data.startswith(MAGIC[ext]):
         raise ApiError(415, "Можно загружать только JPG, PNG или WebP")
     if len(data) > current_app.config["MAX_UPLOAD_MB"] * 1024 * 1024:
@@ -68,11 +95,5 @@ def upload():
             raise ApiError(422, f"Для панорамы 360° нужно фото с пропорцией 2:1 (эквиректангулярное). У этого файла {w}×{h}")
         if w < 2000:
             raise ApiError(422, f"Панорама слишком маленькая ({w}×{h}). Нужно от 2000×1000, лучше 4096×2048 и больше")
-    folder = Path(current_app.config["UPLOAD_DIR"])
-    folder.mkdir(parents=True, exist_ok=True)
-    name = uuid.uuid4().hex + ext
-    (folder / name).write_bytes(data)
-    uid = run("INSERT INTO uploads (filename, stored_as, mime, size, uploaded_by, created_at) VALUES (?,?,?,?,?,?)",
-              (f.filename or name)[:200], name, f.mimetype, len(data), g.user["id"], now())
-    get_db().commit()
+    uid, name = save_file(data, ext, f)
     return {"id": uid, "url": f"/uploads/{name}", "filename": f.filename, "size": len(data), "width": w, "height": h}, 201

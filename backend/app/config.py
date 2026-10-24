@@ -21,6 +21,7 @@ def load() -> dict:
         "FRONTEND_DIR": env("FRONTEND_DIR", str(REPO_DIR / "frontend")),
         "TEMPLATE_PATH": env("TEMPLATE_PATH", str(REPO_DIR / "frontend" / "data" / "template_map.json")),
         "MAX_UPLOAD_MB": int(env("MAX_UPLOAD_MB", "15")),
+        "MAX_VIDEO_MB": int(env("MAX_VIDEO_MB", "60")),   # видео переходов между точками
         "MAX_MAP_BYTES": int(env("MAX_MAP_BYTES", str(2 * 1024 * 1024))),
         "CORS_ORIGINS": [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()],
         # первый администратор создаётся при пустой базе — смените пароль после входа
@@ -40,4 +41,8 @@ def load() -> dict:
         "SMTP_FROM": env("SMTP_FROM", ""),
         "SMTP_SSL": env("SMTP_SSL", "0") == "1",
         "VENUE_SLUG": "rostov-arena",
+        # главный объект сайта: на пустой базе создаётся из frontend/data/manezh_dgtu_map.json
+        "MAIN_SLUG": "manezh-dgtu",
+        "MAIN_NAME": "Манеж ДГТУ",
+        "MAIN_PATH": env("MAIN_PATH", str(REPO_DIR / "frontend" / "data" / "manezh_dgtu_map.json")),
     }

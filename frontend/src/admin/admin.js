@@ -15,7 +15,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   const isEditor = can(user, 'editor'), isAdmin = can(user, 'admin');
   // объект занят другим админом — смотрим его сохранённые изменения, но править не можем
   const lockedBy = isEditor && !lock.mine ? lock.holder : null;
-  const venue = draft.venue || { slug: api.slug, name: 'Ростов Арена' };
+  const venue = draft.venue || { slug: api.slug, name: draft.data?.name || 'Объект' };
   let map = draft.data, undo = [], redo = [], saveT = null, rebuildT = null, scene = null;
   const state = {
     mode: 'build', tool: 'select', sel: null, view: '2d', panel: null, readonly: !isEditor || !!lockedBy,
@@ -72,6 +72,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     </div>
   </div>`;
   const svg = $('.plan', root), three = $('.three', root), sheet = new Sheet($('.sheet', root));
+  try { if (localStorage.getItem('arena.toolsMini') === '1') $('.workspace', root).classList.add('tools-mini'); } catch { /* панель развёрнута */ }
   sheet.peek = 92;
 
   const ed = {
@@ -141,7 +142,10 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   function rebuildLater() { if (!scene) return; clearTimeout(rebuildT); rebuildT = setTimeout(() => scene.setMap(map), 450); }
   function toolbar() {
     const list = state.readonly ? [TOOLS.build[0]] : TOOLS[state.mode];
-    $('#tb').innerHTML = list.map((t) => `<button class="tool${t.pano ? ' pano' : ''}" data-tool="${t.id}" aria-pressed="${state.tool === t.id}" title="${t.n} (${t.key.toUpperCase()})">${t.img ? `<img class="tool-img" src="${iconUrl(t.img)}" alt="">` : icon(t.ic)}${t.n}</button>`).join('');
+    // панель можно свернуть до одних значков — кнопка «‹›» сверху, выбор запоминается
+    const mini = $('.workspace', root).classList.contains('tools-mini');
+    $('#tb').innerHTML = `<button class="tool tool-fold" data-act="foldTools" aria-pressed="false" title="${mini ? 'Развернуть панель' : 'Свернуть панель до значков'}" aria-label="${mini ? 'Развернуть панель инструментов' : 'Свернуть панель инструментов'}">${icon('chevron', mini ? '' : 'flip')}</button>`
+      + list.map((t) => `<button class="tool${t.pano ? ' pano' : ''}" data-tool="${t.id}" aria-pressed="${state.tool === t.id}" title="${t.n} (${t.key.toUpperCase()})" aria-label="${t.n}">${t.img ? `<img class="tool-img" src="${iconUrl(t.img)}" alt="">` : icon(t.ic)}<span class="tl">${t.n}</span></button>`).join('');
     svg.classList.toggle('tool-draw', state.tool !== 'select');
   }
   const seg = (name, cur, items) => `<div class="seg">${items.map(([v, n]) => `<button data-opt="${name}" data-v="${v}" aria-pressed="${String(cur) === String(v)}">${n}</button>`).join('')}</div>`;
@@ -242,7 +246,10 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${field('Панорама Google Maps или видео YouTube', `<textarea class="inp" id="f-pembed" placeholder="Код &lt;iframe&gt; из Google Maps (Поделиться → Встраивание карты) или ссылка на видео YouTube — обычное или 360°" ${dis()}>${esc(o.embed || '')}</textarea>`)}
         ${o.embed && !mapsEmbed(o.embed) ? '<p class="cap">Не похоже на код Google Maps или ссылку YouTube — посетители увидят обычную панораму.</p>' : ''}
         <p class="cap" style="margin:0">Берите только материалы, которые можно показывать: свои съёмки или ролики, где автор разрешил встраивание.</p>
-        <div class="field"><span class="lbl">Переходы · ${nb.length}</span><div class="list">${nb.map((q) => `<div class="item"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(q.name)}</b><span>${Math.round(Math.hypot(q.x - o.x, q.y - o.y))} м</span></span>${state.readonly ? '' : `<button class="iconbtn flat" data-act="unlink" data-id="${q.id}" aria-label="Убрать переход">${icon('close')}</button>`}</div>`).join('') || '<p class="cap">Нет переходов. Включите «Связь» и нажмите на две точки.</p>'}</div></div>
+        <div class="field"><span class="lbl">Переходы · ${nb.length}</span><span class="cap">Видео перехода показывается посетителю, когда он идёт отсюда в соседнюю точку: снимите проход на телефон (MP4 или WebM, до 60 МБ). Обратный путь — отдельное видео у соседней точки.</span>
+          <div class="list">${nb.map((q) => { const v = o.videos?.[q.id]; return `<div class="item trans-row"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(q.name)}</b><span>${Math.round(Math.hypot(q.x - o.x, q.y - o.y))} м · ${v ? 'с видео' : 'плавный переход'}</span></span>
+            ${v ? `<button class="iconbtn flat" data-act="playVideo" data-id="${q.id}" aria-label="Посмотреть видео перехода" title="Посмотреть видео">${icon('eye')}</button>` : ''}
+            ${state.readonly ? '' : `<button class="btn sm${v ? ' ghost' : ''}" data-act="${v ? 'videoRm' : 'videoUp'}" data-id="${q.id}">${v ? 'Убрать видео' : `${icon('upload')}Видео`}</button><button class="iconbtn flat" data-act="unlink" data-id="${q.id}" aria-label="Убрать переход">${icon('close')}</button>`}</div>`; }).join('') || '<p class="cap">Нет переходов. Включите «Связь» и нажмите на две точки.</p>'}</div></div>
         ${state.readonly ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить точку</button>`}`;
     } else if (s.type === 'sector') {
       const sec = sector(s.id), col = map.sectors[s.id]?.color || standColor(map, sec.stand);
@@ -267,7 +274,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         + panoLists(panosHere);
     return `<div class="insp">
       <div><h2 style="font-size:16px">${m === 'build' ? 'Построение помещений' : 'Ключевые точки и панорамы'}</h2>
-      <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Рисуйте помещения инструментами слева, затем переходите к точкам и панорамам.' : 'Метки, точки обзора 360° и переходы между ними — по переходам строятся маршруты.'}</p></div>
+      <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Рисуйте помещения инструментами на панели, затем переходите к точкам и панорамам.' : 'Метки, точки обзора 360° и переходы между ними — по переходам строятся маршруты.'}</p></div>
       ${pasteCard()}
       ${m === 'build' ? underlayBlock() : ''}
       <h3 class="h-sec">${m === 'build' ? `Объекты · ${shapesHere.length}` : `Метки · ${poisHere.length}`}${fname}</h3><div class="list">${list}</div></div>`;
@@ -362,7 +369,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     // копия ложится на текущий этаж — так объект накладывается на другой этаж, а не проваливается в него
     if (state.floor === groundId()) delete n.floor; else n.floor = state.floor;
     if (n.name && c.type !== 'door') n.name = n.name.replace(/ \(копия( \d+)?\)$/, '') + ' (копия)';
-    if (c.type === 'pano') { n.slug = uniqueSlug(map, slugify(n.name), n.id); n.created = Date.now(); delete n.arrows; }
+    if (c.type === 'pano') { n.slug = uniqueSlug(map, slugify(n.name), n.id); n.created = Date.now(); delete n.arrows; delete n.videos; }
     pasteN++;
     const dx = at ? snap(at.x - mid.x) : 3 * pasteN, dy = at ? snap(at.y - mid.y) : 3 * pasteN;
     shift(c.type, n, dx, dy);
@@ -445,6 +452,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       ].filter(Boolean);
       h += `<div class="list menu-list">${items.map(([p, ic, n, sub]) => `<button class="item" data-act="panel" data-p="${p}">${icon(ic)}<span class="t"><b>${n}</b><span>${sub}</span></span>${icon('chevron', 'chev')}</button>`).join('')}
         ${links.map(([href, ic, n, sub]) => `<a class="item" href="${href}">${icon(ic)}<span class="t"><b>${n}</b><span>${sub}</span></span>${icon('chevron', 'chev')}</a>`).join('')}
+        <button class="item" data-theme-toggle>${icon('moon')}<span class="t"><b>Светлая или тёмная тема</b><span>Переключить оформление</span></span></button>
         <button class="item" data-act="exportJson">${icon('save')}<span class="t"><b>Скачать карту (JSON)</b><span>Резервная копия или новый шаблон для репозитория</span></span></button>
         ${isEditor ? `<button class="item" data-act="importJson">${icon('upload')}<span class="t"><b>Загрузить карту из JSON</b><span>Заменит черновик, можно отменить</span></span></button>` : ''}
         <a class="item" href="index.html?object=${encodeURIComponent(venue.slug)}&preview=1" target="_blank" rel="noopener">${icon('eye')}<span class="t"><b>Черновик глазами посетителя</b><span>Без публикации, в новой вкладке</span></span></a>
@@ -669,6 +677,20 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     inp.click();
   }
 
+  function uploadVideo(o, toId) {
+    const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'video/mp4,video/webm,video/quicktime' });
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      if (f.size > 60 * 1048576) return toast('Видео больше 60 МБ — сократите или сожмите его', 5000);
+      try {
+        toast('Загружаю видео…', 20000);
+        const r = await api.upload(f, 'video');
+        ed.change(() => { o.videos = { ...(o.videos || {}), [toId]: r.url }; }, 'Видео перехода добавлено');
+      } catch (e) { toast(e.message, 6000); }
+    };
+    inp.click();
+  }
+
   function uploadPano360(o) {
     const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
     inp.onchange = async () => {
@@ -708,6 +730,12 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'panel') panel(t.dataset.p);
     if (a === 'closePanel') { state.panel = null; inspector(); }
     if (a === 'exitLook') exitLook();
+    if (a === 'playVideo' && o?.videos?.[t.dataset.id]) { const { playTransition } = await import('../core/transition.js'); const tv = playTransition(o.videos[t.dataset.id], { title: `${o.name} → ${map.panos.find((x) => x.id === t.dataset.id)?.name || ''}`, sound: true }); tv.done.then((why) => { tv.close(); if (why === 'error') toast('Видео не воспроизводится в этом браузере — нужен MP4 (H.264) или WebM', 5000); }); return; }
+    if (a === 'foldTools') {
+      const ws = $('.workspace', root), on = ws.classList.toggle('tools-mini');
+      try { localStorage.setItem('arena.toolsMini', on ? '1' : '0'); } catch { /* не запомнится */ }
+      toolbar(); plan.render?.(); return;
+    }
     if (a.startsWith('tune') && tune && scene?.look && !state.readonly) return tuneAct(a, t);
     if (a === 'viewCyl' && o?.pano) { const { openCylPano } = await import('../core/cylpano.js'); openCylPano({ url: o.pano, title: o.name }); return; }
     if (state.readonly && !['panel', 'closePanel', 'reload', 'show3d', 'lookPano', 'desel'].includes(a)) return;
@@ -722,7 +750,9 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'dup') duplicate();
     if (a === 'paste') paste(null);
     if (a === 'del') { if (!o || !LISTS[s.type] || o.cat === 'plaza' || !(await ed.confirmDelete(s, o))) return; const list = LISTS[s.type]; ed.change(() => { map[list] = map[list].filter((x) => x.id !== s.id); if (s.type === 'pano') map.links = map.links.filter((l) => !l.includes(s.id)); }, 'Удалено'); ed.select(null); }
-    if (a === 'unlink') ed.change(() => { map.links = map.links.filter((l) => !(l.includes(s.id) && l.includes(t.dataset.id))); }, 'Переход убран');
+    if (a === 'unlink') ed.change(() => { map.links = map.links.filter((l) => !(l.includes(s.id) && l.includes(t.dataset.id))); if (o.videos) delete o.videos[t.dataset.id]; }, 'Переход убран');
+    if (a === 'videoUp' && o) uploadVideo(o, t.dataset.id);
+    if (a === 'videoRm' && o && (await confirmBox('Убрать видео этого перехода? Посетитель увидит обычный плавный переход.', { ok: 'Убрать видео' }))) ed.change(() => { delete o.videos[t.dataset.id]; if (!Object.keys(o.videos).length) delete o.videos; }, 'Видео убрано');
     if (a === 'photo') upload((url) => (o.photo = url));
     if (a === 'slugFromName' && o) ed.change(() => { o.slug = uniqueSlug(map, slugify(o.name), o.id); }, 'Адрес обновлён');
     if (a === 'setIcon' && o) ed.change(() => { delete o.iconUrl; if (t.dataset.v === (s.type === 'pano' ? 'pano' : o.cat)) delete o.icon; else o.icon = t.dataset.v; }, 'Значок изменён');

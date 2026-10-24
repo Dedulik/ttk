@@ -2,7 +2,7 @@
 // Кэшируем только то, что и так публично: код и картинки сайта, опубликованные карты, фото панорам.
 // Никогда не кэшируем: вход, профиль, черновики, команду, журнал, приглашения — всё под /api/, кроме
 // опубликованной карты и /api/health; страницу и код админ-панели — тоже нет.
-const VERSION = 'arena-v1';
+const VERSION = 'arena-v3';
 const STATIC = `${VERSION}-static`, DATA = `${VERSION}-data`, MEDIA = `${VERSION}-media`;
 const SHELL = ['./', './index.html', './src/styles.css', './src/main.js', './manifest.webmanifest', './assets/icon-192.png'];
 
@@ -25,8 +25,13 @@ self.addEventListener('fetch', (e) => {
     if (PUBLIC_API.some((r) => r.test(path))) e.respondWith(networkFirst(req, DATA));
     return;
   }
+  // видео (и любые запросы «частями» — Range) идут мимо кэша: частичный ответ 206 в кэш не кладётся
+  if (req.headers.has('range') || /\.(mp4|webm)$/i.test(path)) return;
   if (path.startsWith('/uploads/')) { e.respondWith(cacheFirst(req, MEDIA, 80)); return; }
   if (req.mode === 'navigate') { e.respondWith(networkFirst(req, STATIC).catch(() => offlinePage())); return; }
+  // код сайта — сначала из сети (после обновления сразу новая версия, без смеси старых и новых модулей),
+  // картинки, шрифты и three.js — из кэша с фоновым обновлением
+  if (path.startsWith('/src/') || path.endsWith('.webmanifest')) { e.respondWith(networkFirst(req, STATIC)); return; }
   e.respondWith(staleWhileRevalidate(req, STATIC));
 });
 
@@ -34,7 +39,7 @@ async function networkFirst(req, name) {
   const cache = await caches.open(name);
   try {
     const res = await fetch(req);
-    if (res.ok) cache.put(req, res.clone());
+    if (res.status === 200) cache.put(req, res.clone());
     return res;
   } catch (err) {
     const hit = await cache.match(req, { ignoreSearch: req.mode === 'navigate' });
@@ -44,14 +49,14 @@ async function networkFirst(req, name) {
 }
 async function staleWhileRevalidate(req, name) {
   const cache = await caches.open(name), hit = await cache.match(req);
-  const net = fetch(req).then((res) => { if (res.ok) cache.put(req, res.clone()); return res; }).catch(() => null);
+  const net = fetch(req).then((res) => { if (res.status === 200) cache.put(req, res.clone()); return res; }).catch(() => null);
   return hit || (await net) || new Response('', { status: 504 });
 }
 async function cacheFirst(req, name, limit) {
   const cache = await caches.open(name), hit = await cache.match(req);
   if (hit) return hit;
   const res = await fetch(req);
-  if (res.ok) {
+  if (res.status === 200) {
     await cache.put(req, res.clone());
     const keys = await cache.keys();
     for (const k of keys.slice(0, Math.max(0, keys.length - limit))) await cache.delete(k);

@@ -20,15 +20,21 @@ from .errors import ApiError
 from .security import hash_password, load_secret, restrict
 
 
+def seed_venue(con, slug: str, name: str, path: str, comment: str) -> None:
+    """Объект из файла карты, если его ещё нет (черновик и опубликованная версия 1)."""
+    v = con.execute("SELECT id FROM venues WHERE slug = ?", (slug,)).fetchone()
+    vid = v["id"] if v else con.execute("INSERT INTO venues (slug, name, created_at) VALUES (?, ?, ?)", (slug, name, now())).lastrowid
+    if not con.execute("SELECT 1 FROM map_drafts WHERE venue_id = ?", (vid,)).fetchone() and Path(path).is_file():
+        raw = json.dumps(json.loads(Path(path).read_text(encoding="utf-8")), ensure_ascii=False)
+        con.execute("INSERT INTO map_drafts (venue_id, data, updated_at) VALUES (?,?,?)", (vid, raw, now()))
+        con.execute("INSERT INTO map_versions (venue_id, number, data, comment, published_at) VALUES (?,1,?,?,?)", (vid, raw, comment, now()))
+
+
 def seed(cfg: dict) -> None:
     con = connect(cfg["DB_PATH"])
     migrate(con)
-    v = con.execute("SELECT id FROM venues WHERE slug = ?", (cfg["VENUE_SLUG"],)).fetchone()
-    vid = v["id"] if v else con.execute("INSERT INTO venues (slug, name, created_at) VALUES (?, ?, ?)", (cfg["VENUE_SLUG"], "Ростов Арена", now())).lastrowid
-    if not con.execute("SELECT 1 FROM map_drafts WHERE venue_id = ?", (vid,)).fetchone():
-        raw = json.dumps(json.loads(Path(cfg["TEMPLATE_PATH"]).read_text(encoding="utf-8")), ensure_ascii=False)
-        con.execute("INSERT INTO map_drafts (venue_id, data, updated_at) VALUES (?,?,?)", (vid, raw, now()))
-        con.execute("INSERT INTO map_versions (venue_id, number, data, comment, published_at) VALUES (?,1,?,?,?)", (vid, raw, "Шаблон по генплану", now()))
+    seed_venue(con, cfg["MAIN_SLUG"], cfg["MAIN_NAME"], cfg["MAIN_PATH"], "Манеж ДГТУ")
+    seed_venue(con, cfg["VENUE_SLUG"], "Ростов Арена", cfg["TEMPLATE_PATH"], "Шаблон по генплану")
     if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
         people = [(cfg["ADMIN_EMAIL"], "Администратор", cfg["ADMIN_PASSWORD"], "admin")]
         if cfg["SEED_DEMO_USERS"]:
@@ -72,13 +78,15 @@ def inline_script_hashes(front: Path) -> str:
 
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("video/webm", ".webm")   # на Windows реестр может не знать этих типов
+mimetypes.add_type("video/mp4", ".mp4")
 
 
 def create_app(overrides: dict | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config.update(config.load())
     app.config.update(overrides or {})
-    app.config["MAX_CONTENT_LENGTH"] = (app.config["MAX_UPLOAD_MB"] + 1) * 1024 * 1024
+    app.config["MAX_CONTENT_LENGTH"] = (max(app.config["MAX_UPLOAD_MB"], app.config["MAX_VIDEO_MB"]) + 1) * 1024 * 1024
     app.config["SECRET_KEY"] = load_secret(app.config)
     backup_on_start(app.config)
     seed(app.config)
