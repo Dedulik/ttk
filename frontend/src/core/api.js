@@ -66,7 +66,19 @@ class ServerApi {
   createUser(u) { return this.req('POST', '/api/users', u); }
   updateUser(id, u) { return this.req('PATCH', `/api/users/${id}`, u); }
   deleteUser(id) { return this.req('DELETE', `/api/users/${id}`); }
-  upload(file) { const f = new FormData(); f.append('file', file); return this.req('POST', '/api/uploads', f, true); }
+  /** Загрузка картинки; kind='pano360' — сервер дополнительно проверит пропорцию 2:1 и разрешение. */
+  upload(file, kind) { const f = new FormData(); f.append('file', file); if (kind) f.append('kind', kind); return this.req('POST', '/api/uploads', f, true); }
+  // регистрация посетителя (роль всегда «посетитель») и приглашения сотрудников
+  async register(b) { const r = await this.req('POST', '/api/auth/register', b); this.setToken(r.token); return r.user; }
+  inviteInfo(token) { return this.req('GET', `/api/invites/accept/${encodeURIComponent(token)}`); }
+  async acceptInvite(token, b) { const r = await this.req('POST', `/api/invites/accept/${encodeURIComponent(token)}`, b); this.setToken(r.token); return r.user; }
+  invites() { return this.req('GET', '/api/invites'); }
+  createInvite(b) { return this.req('POST', '/api/invites', b); }
+  revokeInvite(id) { return this.req('DELETE', `/api/invites/${id}`); }
+  // «Пиксельная охота»
+  questMine() { return this.req('GET', `/api/quest/${encodeURIComponent(this.slug)}/me`); }
+  questFound(items) { return this.req('POST', `/api/quest/${encodeURIComponent(this.slug)}/found`, { items }); }
+  questLeaders() { return this.req('GET', `/api/quest/${encodeURIComponent(this.slug)}/leaders`); }
   audit() { return this.req('GET', '/api/admin/audit?limit=200'); }
   security() { return this.req('GET', '/api/admin/security'); }
   async backup() {
@@ -78,7 +90,7 @@ class ServerApi {
 }
 
 // ---------------- демо без сервера ----------------
-const LEVEL = { viewer: 0, editor: 1, admin: 2 };
+const LEVEL = { user: 0, viewer: 1, editor: 2, admin: 3 };
 const mem = {};
 const store = {
   get(k, d) { try { const v = localStorage.getItem('arena.demo.' + k); return v ? JSON.parse(v) : (mem[k] ?? d); } catch { return mem[k] ?? d; } },
@@ -188,6 +200,9 @@ class DemoApi {
     if (me.id === id) throw new ApiError(400, 'Нельзя удалить самого себя');
     store.set('users', store.get('users', []).filter((u) => u.id !== id)); return null;
   }
+  register = serverOnly; acceptInvite = serverOnly; inviteInfo = serverOnly; invites = serverOnly; createInvite = serverOnly; revokeInvite = serverOnly;
+  questMine = serverOnly; questFound = serverOnly;
+  async questLeaders() { return { total: 0, leaders: [] }; }
   async upload(file) {
     this.need('editor');
     if (file.size > 2.5 * 1024 * 1024) throw new ApiError(413, 'В демо-режиме — фото до 2,5 МБ. На сервере — до 15 МБ.');
@@ -209,5 +224,8 @@ export async function createApi() {
   const d = new DemoApi(); await d.init(); return d;
 }
 
-export const ROLE_NAMES = { viewer: 'Наблюдатель', editor: 'Редактор', admin: 'Администратор' };
+export const ROLE_NAMES = { user: 'Посетитель', viewer: 'Наблюдатель', editor: 'Редактор', admin: 'Администратор' };
+/** Роли сотрудников — им доступна админ-панель; посетитель видит только свой кабинет. */
+export const STAFF = ['viewer', 'editor', 'admin'];
 export const can = (user, role) => !!user && LEVEL[user.role] >= LEVEL[role];
+export const isStaff = (user) => !!user && STAFF.includes(user.role);

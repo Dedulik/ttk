@@ -46,13 +46,17 @@ const P = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
   volume: '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
+  mute: '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
+  full: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
+  shot: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  share: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/>',
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
 };
 export const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
 
 /** Значок метки для списков: картинка ТТК, а если её нет — цветной кружок с буквой. */
-export function badge(kind, color, glyph = '', cls = '') {
-  const u = iconUrl(kind);
+export function badge(kind, color, glyph = '', cls = '', own = null) {
+  const u = own || iconUrl(kind);
   return u ? `<span class="glyph ico ${cls}"><img src="${u}" alt="" loading="lazy"></span>` : `<span class="glyph ${cls}" style="background:${color}">${esc(glyph)}</span>`;
 }
 
@@ -88,6 +92,21 @@ export function showTip(text, x, y) {
   tipEl.style.top = Math.max(8, y - 34) + 'px';
 }
 export function hideTip() { if (tipEl) tipEl.hidden = true; }
+
+/** Подтверждение опасного действия в самой странице (без системного confirm). Возвращает Promise<boolean>. */
+export function confirmBox(text, { ok = 'Удалить', cancel = 'Отмена', danger = true } = {}) {
+  return new Promise((resolve) => {
+    const back = document.createElement('div');
+    back.className = 'confirm-back';
+    back.innerHTML = `<div class="confirm" role="alertdialog" aria-modal="true" aria-label="${esc(text)}"><p>${esc(text)}</p>
+      <div class="row"><button class="btn ${danger ? 'primary' : 'dark'}" data-v="1">${esc(ok)}</button><button class="btn ghost" data-v="0">${esc(cancel)}</button></div></div>`;
+    const done = (v) => { back.remove(); document.removeEventListener('keydown', key, true); resolve(v); };
+    const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done(true); } };
+    back.addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) done(b.dataset.v === '1'); else if (e.target === back) done(false); });
+    document.addEventListener('keydown', key, true);
+    document.body.append(back); back.querySelector('[data-v="1"]').focus();
+  });
+}
 
 export function toast(text, ms = 2600) {
   let el = $('#toast');

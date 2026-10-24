@@ -1,11 +1,18 @@
 // Экран посетителя: карта во весь экран, поиск, шторка с карточкой места, маршрут и панорамы.
 import { Plan2D } from '../core/plan2d.js';
 import { Scene3D } from '../core/scene3d.js';
-import { CATS, LAYERS, PCATS, dist, elevOf, embedKind, floorById, floorsSorted, kindOf, layersFor, mapsEmbed, visitorLayerMode, nearestPano, neighbors, placeOf, poiColor, route, search, shapeCenter, shapePoints } from '../core/model.js';
+import { CATS, LAYERS, PCATS, arrowItems, dist, slugify, startView, elevOf, embedKind, floorById, floorsSorted, kindOf, layersFor, mapsEmbed, visitorLayerMode, nearestPano, neighbors, placeOf, poiColor, route, search, shapeCenter, shapePoints } from '../core/model.js';
 import { SECTORS, ST, STANDS, NUMS, neighbours, otherTier, ring, secMid, sector, setStadiumCenter } from '../core/stadium.js';
 import { $, Sheet, badge, esc, icon, photo, themeButton, toast } from '../core/ui.js';
-import { iconUrl } from '../core/icons.js';
-import { createMascot, mascotSettings } from '../core/mascot.js';
+import { iconUrl, pointIconUrl } from '../core/icons.js';
+import { createMascot, mascotSettings, setSound, soundOn } from '../core/mascot.js';
+
+const LOADER_GIF = new URL('../../assets/mascot/full.gif', import.meta.url).href;
+const PIXEL = new URL('../../assets/icons/pixel.png', import.meta.url).href;
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* без памяти браузера */ } },
+};
 
 const QUICK = [
   { k: 'gate', n: 'Входы', g: '→' }, { k: 'food', n: 'Еда', g: 'Е' }, { k: 'wc', n: 'Туалеты', g: 'WC' }, { k: 'med', n: 'Медпункт', g: '+' },
@@ -13,8 +20,15 @@ const QUICK = [
 ];
 
 export async function mountVisitor(root, api) {
-  const pub = await api.published();
+  const qs0 = new URLSearchParams(location.search), preview = qs0.get('preview') === '1', hash0 = location.hash;   // адрес до того, как шторка его перепишет
+  let pub = null;
+  if (preview) {
+    try { const d = await api.draft(); pub = { data: d.data, venue: d.venue, number: 'черновик', draft: true }; }
+    catch { toast('Черновик могут смотреть только сотрудники — показываю опубликованную версию', 5000); }
+  }
+  pub ||= await api.published();
   const map = pub.data, stadium = !!map.stadium;
+  const visPois = map.pois.filter((p) => p.cat !== 'quest');
   const title = pub.venue?.name || map.name || 'Ростов Арена';
   // быстрые кнопки: базовые + типы меток ТТК, которые на этой карте действительно есть (регистрация, гардероб…)
   const extra = ['registration', 'wardrobe', 'hall', 'coffee', 'stage', 'partners', 'participants'].filter((k) => map.pois.some((p) => p.cat === k)).map((k) => ({ k, n: PCATS[k].n, g: PCATS[k].g }));
@@ -22,7 +36,12 @@ export async function mountVisitor(root, api) {
   const quickBadge = (q) => (iconUrl(q.k === 'panos' ? 'pano' : q.k) ? badge(q.k === 'panos' ? 'pano' : q.k, '', '', 'sm')
     : `<span class="glyph sm" style="background:${(PCATS[q.k] || {}).c || (q.k === 'parking' ? CATS.parking.c : 'var(--ink)')}">${q.g}</span>`);
   // пришли со страницы выбора карт автора — показываем дорогу обратно
-  const qs = new URLSearchParams(location.search), byParam = qs.has('object') && qs.get('by');
+  const qs = qs0, byParam = qs.has('object') && qs.get('by');
+  const slug = api.slug || 'map', lastKey = 'arena.last.' + slug;
+  // «Пиксельная охота»: пиксели ТТК спрятаны в панорамах
+  const questItems = map.pois.filter((p) => p.cat === 'quest'), qKey = 'arena.quest.' + slug;
+  const found = new Set(store.get(qKey, []).filter((id) => questItems.some((p) => p.id === id)));
+  const me = questItems.length && !api.demo ? await api.me().catch(() => null) : null;
   setStadiumCenter(map);
   document.title = title + ' · Карта';
   // скрытые слои запоминаются в браузере посетителя отдельно для каждого объекта
@@ -43,7 +62,8 @@ export async function mountVisitor(root, api) {
       <div class="topbar">
         <label class="search">${icon('search')}<input id="q" type="search" placeholder="Сектор, вход, кафе…" autocomplete="off" enterkeyhint="search" aria-label="Поиск по карте"><button class="iconbtn flat" id="qx" hidden aria-label="Очистить">${icon('close')}</button></label>
         ${themeButton()}
-        <a class="iconbtn admin-link" href="admin.html" aria-label="Админ-панель" title="Админ-панель для сотрудников">${icon('user')}<span>Админ-панель</span></a>
+        <button class="iconbtn" data-act="sound" aria-pressed="false" aria-label="Звук" title="Звук маскота">${icon('mute')}</button>
+        <a class="iconbtn admin-link" href="admin.html" aria-label="Войти" title="Вход и регистрация: личный кабинет, «Пиксельная охота», админ-панель для сотрудников">${icon('user')}<span>Войти</span></a>
       </div>
       <div class="pano-embed" hidden></div>
       ${multiFloor ? `<div class="floor-pick" role="group" aria-label="Этажи">${[...floors].reverse().map((f) => `<button data-floor="${f.id}" title="${esc(f.name)}" aria-pressed="${f.id === floors[0].id}">${floors.indexOf(f) + 1}</button>`).join('')}</div>` : ''}
@@ -53,6 +73,8 @@ export async function mountVisitor(root, api) {
         <button class="iconbtn" data-act="layers" aria-label="Слои">${icon('layers')}</button>
         <button class="iconbtn" data-act="north" aria-label="Север вверх">${icon('compass')}</button>
         <button class="iconbtn" data-act="home" aria-label="Вся территория">${icon('target')}</button>
+        <button class="iconbtn" data-act="fullscreen" aria-label="Во весь экран" title="Во весь экран">${icon('full')}</button>
+        <button class="iconbtn" data-act="shot" aria-label="Снимок экрана" title="Сохранить снимок 3D-вида">${icon('shot')}</button>
       </div>
       <div class="pop" id="layers" hidden>
         <b class="pop-h">Слои карты</b>
@@ -60,16 +82,20 @@ export async function mountVisitor(root, api) {
         ${stadium ? '<label>Кресла как в жизни <input type="checkbox" class="switch" id="lySeats" checked></label>' : ''}
       </div>
       <div class="look-ui" hidden>
-        <div class="look-top"><button class="iconbtn" data-act="exitLook" aria-label="Назад к карте">${icon('back')}</button><div class="look-title"><b id="lkName"></b><span id="lkSub"></span></div></div>
+        <div class="look-top"><button class="iconbtn" data-act="exitLook" aria-label="Назад к карте">${icon('back')}</button><div class="look-title"><b id="lkName"></b><span id="lkSub"></span></div>
+          <div class="look-acts"><button class="iconbtn" data-act="sound" aria-pressed="false" aria-label="Звук" title="Звук маскота">${icon('mute')}</button><button class="iconbtn" data-act="share" aria-label="Поделиться ссылкой" title="Ссылка на эту панораму">${icon('share')}</button><button class="iconbtn" data-act="shot" aria-label="Снимок" title="Сохранить снимок панорамы">${icon('shot')}</button><button class="iconbtn" data-act="fullscreen" aria-label="Во весь экран" title="Во весь экран">${icon('full')}</button></div></div>
         <div class="look-hint" id="lkHint">Ведите пальцем — осмотреться · нажмите на землю — идти</div>
         <div class="look-bottom" id="lkChips"></div>
         <div class="mini" id="mini"></div>
       </div>
+      <div class="pano-loader" id="ld" hidden role="status" aria-live="polite"><div class="ld-card"><img src="${LOADER_GIF}" alt=""><span id="ldTxt">Загружаю панораму…</span>
+        <div class="row" id="ldActs" hidden><button class="btn sm primary" data-act="ldRetry">Повторить</button><button class="btn sm" data-act="ldSkip">Показать без фото</button></div></div></div>
+      ${pub.draft ? `<div class="preview-bar">${icon('eye')}<span><b>Черновик</b> — так карту увидят после публикации</span><a class="btn sm" href="admin.html#/edit/${encodeURIComponent(slug)}">В конструктор</a></div>` : ''}
     </div>
     <section class="sheet"><div class="sheet-grip"><i></i></div><div class="sheet-body"></div></section>
   </div>`;
 
-  const S = { view: '3d', sel: null, route: null, routeFrom: null, look: null, list: null, floor: floors[0].id };
+  const S = { view: '3d', sel: null, route: null, routeFrom: null, look: null, list: null, floor: floors[0].id, busy: false, tok: 0 };
   const three = $('.three', root), svg = $('.plan', root), sheet = new Sheet($('.sheet', root));
   const scene = new Scene3D(three, { onPick, onLook: drawMiniCone });
   // маскот ТТК: прячется за правым краем, в панорамах рассказывает о месте
@@ -79,30 +105,35 @@ export async function mountVisitor(root, api) {
   scene.setMap(map); scene.setActive(true); scene.overview(true);
   plan.setMap(map); plan.set({ showPanos: true, hidden, floor: S.floor, ghost: false });
   if (hidden.size) scene.setHidden(hidden);
+  scene.setQuestFound(found);
+  syncSound();
   home();
+  if (me && questItems.length && !pub.draft) syncQuest();
 
   // ---------- шторка ----------
   function home() {
-    S.sel = null; S.list = null; sync();
+    S.sel = null; S.list = null; sync(); if (!S.look) setHash('');
     const stands = ['A', 'B', 'C', 'D'].map((k) => `<button class="item stand-row" data-go="sec:${k}${NUMS.lower[k][0]}"><span class="bar" style="background:${map.style.stands[k] || STANDS[k].c}"></span><span class="t"><b>${STANDS[k].n}</b><span>${k}${NUMS.lower[k][0]}–${k}${NUMS.lower[k][1]} · ${k}${NUMS.upper[k][0]}–${k}${NUMS.upper[k][1]}</span></span>${icon('chevron', 'chev')}</button>`).join('');
     const intro = stadium ? 'Стадион, Арена Экспо и вся территория' : pub.venue?.description || 'Карта объекта';
     sheet.set(`
-      <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · версия карты ${pub.number}${api.demo ? ' · демо' : ''}</p>
+      <div class="home-head"><h1>${esc(title)}</h1><p>${esc(intro)} · ${pub.draft ? 'черновик, ещё не опубликован' : 'версия карты ' + pub.number}${api.demo ? ' · демо' : ''}</p>
         ${byParam ? `<a class="txt-btn" href="?by=${encodeURIComponent(byParam)}" style="align-self:flex-start">← Все карты автора</a>` : ''}</div>
+      ${lastPano() ? `<button class="item resume" data-pano="${lastPano().id}">${badge('pano', '', '', 'sm', pointIconUrl(lastPano(), 'pano'))}<span class="t"><b>Продолжить с «${esc(lastPano().name)}»</b><span>Последняя открытая панорама</span></span>${icon('chevron', 'chev')}</button>` : ''}
+      ${questCard()}
       <div class="quick">${quickList.map((q) => `<button data-quick="${q.k}">${quickBadge(q)}${q.n}</button>`).join('')}</div>
       ${stadium ? `<div class="photos">
         ${[['aerial', 'Стадион и территория с высоты'], ['facade', 'Фасад и парадная лестница'], ['bowl', 'Чаша: 4 трибуны, 2 яруса'], ['seats', 'Сектора и ряды']].map(([f, c]) => `<figure><img src="${photo(f)}" alt="${c}" loading="lazy"><figcaption>${c}</figcaption></figure>`).join('')}
       </div>
       <h3 class="h-sec">Трибуны</h3><div class="list">${stands}</div>` : ''}
-      ${map.pois.length ? `<h3 class="h-sec">Важное рядом</h3><div class="list">${map.pois.slice(0, 6).map(itemPoi).join('')}</div>` : ''}
-      <a class="staff-link" href="admin.html">${icon('user')}<span><b>Для сотрудников</b><span>Админ-панель: конструктор карт, команда, безопасность</span></span>${icon('chevron', 'chev')}</a>`, sheet.state === 'full' ? 'half' : undefined);
+      ${visPois.length ? `<h3 class="h-sec">Важное рядом</h3><div class="list">${visPois.slice(0, 6).map(itemPoi).join('')}</div>` : ''}
+      <a class="staff-link" href="admin.html">${icon('user')}<span><b>Вход и регистрация</b><span>Личный кабинет и «Пиксельная охота»; для сотрудников — админ-панель</span></span>${icon('chevron', 'chev')}</a>`, sheet.state === 'full' ? 'half' : undefined);
   }
-  function itemPoi(p) { return `<button class="item" data-go="${p.id}">${badge(p.cat, poiColor(map, p), (PCATS[p.cat] || PCATS.info).g)}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || (PCATS[p.cat] || PCATS.info).n)}</span></span>${icon('chevron', 'chev')}</button>`; }
+  function itemPoi(p) { return `<button class="item" data-go="${p.id}">${badge(p.cat, poiColor(map, p), (PCATS[p.cat] || PCATS.info).g, '', pointIconUrl(p, p.cat))}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || (PCATS[p.cat] || PCATS.info).n)}</span></span>${icon('chevron', 'chev')}</button>`; }
   function itemShape(s) { return `<button class="item" data-go="${s.id}"><span class="glyph sm" style="background:${s.color || map.style.cats[s.cat] || CATS[s.cat]?.c}"></span><span class="t"><b>${esc(s.name)}</b><span>${esc(s.desc || CATS[s.cat]?.n || '')}</span></span>${icon('chevron', 'chev')}</button>`; }
 
   function quick(k) {
     S.list = k; let title, html;
-    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}">${badge('pano')}<span class="t"><b>${esc(p.name)}</b><span>${panoSub(p).replace(/^./, (c) => c.toLowerCase())} ·${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
+    if (k === 'panos') { title = 'Точки обзора 360°'; html = map.panos.map((p) => `<button class="item" data-pano="${p.id}">${badge('pano', '', '', '', pointIconUrl(p, 'pano'))}<span class="t"><b>${esc(p.name)}</b><span>${panoSub(p).replace(/^./, (c) => c.toLowerCase())} ·${neighbors(map, p.id).length} перехода</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'stands') { title = 'Сектора'; html = SECTORS.map((s) => `<button class="item" data-go="sec:${s.id}"><span class="glyph sm mono" style="background:${map.sectors[s.id]?.color || map.style.stands[s.stand] || STANDS[s.stand].c}">${s.stand}</span><span class="t"><b>Сектор ${s.id}</b><span>${STANDS[s.stand].n} · ${s.tier === 'lower' ? 'нижний' : 'верхний'} ярус</span></span>${icon('chevron', 'chev')}</button>`).join(''); }
     else if (k === 'parking') { title = 'Парковки'; html = map.shapes.filter((s) => s.cat === 'parking').map(itemShape).join(''); }
     else {
@@ -127,7 +158,7 @@ export async function mountVisitor(root, api) {
 
   function card(ref) {
     const pl = placeOf(map, ref); if (!pl) return home();
-    S.sel = ref; sync();
+    S.sel = ref; sync(); setHash('place/' + (ref.startsWith('sec:') ? ref.slice(4) : ref));
     const ph = placePhoto(pl), np = nearestPano(map, pl);
     const facts = [];
     if (pl.type === 'sector') {
@@ -142,7 +173,7 @@ export async function mountVisitor(root, api) {
     sheet.set(`
       <div class="place">
         ${ph ? `<img class="place-photo" src="${ph}" alt="">` : ''}
-        <div class="place-head">${pl.type === 'poi' ? badge(pl.obj.cat, pl.color, (PCATS[pl.obj.cat] || PCATS.info).g) : pl.type === 'pano' ? badge('pano') : `<span class="glyph" style="background:${pl.color || 'var(--ink)'}">${pl.type === 'sector' ? pl.obj.stand : ''}</span>`}
+        <div class="place-head">${pl.type === 'poi' ? badge(pl.obj.cat, pl.color, (PCATS[pl.obj.cat] || PCATS.info).g, '', pointIconUrl(pl.obj, pl.obj.cat)) : pl.type === 'pano' ? badge('pano', '', '', '', pointIconUrl(pl.obj, 'pano')) : `<span class="glyph" style="background:${pl.color || 'var(--ink)'}">${pl.type === 'sector' ? pl.obj.stand : ''}</span>`}
           <div class="t"><h2>${esc(pl.name)}</h2><p>${esc(pl.sub)}</p></div><button class="iconbtn flat" data-act="home" aria-label="Закрыть">${icon('close')}</button></div>
         ${pl.text ? `<p class="txt">${esc(pl.text)}</p>` : ''}
         <div class="actions">
@@ -192,6 +223,7 @@ export async function mountVisitor(root, api) {
     card(ref);
   }
   function onPick(hit) {
+    if (hit.type === 'ref' && questItems.some((p) => p.id === hit.ref)) return catchPixel(hit.ref);
     if (S.look) {
       if (hit.type === 'arrow') return glide(hit.id);
       if (hit.type === 'ground' && S.look.type === 'pano') return stepToward(hit.point);
@@ -215,6 +247,7 @@ export async function mountVisitor(root, api) {
 
   // ---------- панорамы и вид с места ----------
   function enterLookUI(name, sub, chips) {
+    root.querySelector('.vis').classList.add('looking');   // панорама — на весь экран, без пустого места под шторку
     $('.look-ui', root).hidden = false; $('.sheet', root).hidden = true; $('.topbar', root).hidden = true; $('.fabs', root).hidden = true; $('#res', root).hidden = true; $('#layers').hidden = true;
     root.querySelector('.floor-pick')?.toggleAttribute('hidden', true);
     $('#lkName').textContent = name; $('#lkSub').textContent = sub; $('#lkChips').innerHTML = chips;
@@ -222,7 +255,8 @@ export async function mountVisitor(root, api) {
     const hint = $('#lkHint'); hint.style.opacity = 1; clearTimeout(enterLookUI.t); enterLookUI.t = setTimeout(() => (hint.style.opacity = 0), 3500);
   }
   function exitLook() {
-    if (!S.look) return; const wasPlan = S.look.plan; S.look = null; setEmbed(null);
+    if (!S.look) return; const wasPlan = S.look.plan; S.look = null; setEmbed(null); S.busy = false; S.tok++; loading(false); setHash(S.sel ? null : '');
+    root.querySelector('.vis').classList.remove('looking');
     $('.look-ui', root).hidden = true; $('.sheet', root).hidden = false; $('.topbar', root).hidden = false; $('.fabs', root).hidden = false;
     root.querySelector('.floor-pick')?.toggleAttribute('hidden', false);
     scene.exitLook(true); scene.focus(wasPlan.x, wasPlan.y, 70);
@@ -242,27 +276,134 @@ export async function mountVisitor(root, api) {
     if (box.dataset.src !== src) box.innerHTML = `<iframe src="${esc(src)}" title="${esc(p.name)}" allow="accelerometer; gyroscope; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
     box.dataset.src = src;
   }
+  // ---------- загрузка панорамы: GIF маскота, пока фото не готово; ошибка — «Повторить» ----------
+  let ldAct = {};
+  function loading(state, retry, skip) {
+    const ld = $('#ld', root); clearTimeout(loading.t);
+    if (state === true) {
+      $('#ldActs', root).hidden = true; $('#ldTxt', root).textContent = 'Загружаю панораму…';
+      loading.t = setTimeout(() => (ld.hidden = false), 200);   // из кэша фото придёт сразу — тогда загрузку не показываем
+      return;
+    }
+    if (state === 'error') { ld.hidden = false; $('#ldTxt', root).textContent = 'Не удалось загрузить панораму. Проверьте интернет и попробуйте ещё раз.'; $('#ldActs', root).hidden = false; ldAct = { retry, skip }; return; }
+    ld.hidden = true; ldAct = {};
+  }
+  const panoKey = (p) => p.slug || p.id;
+  /** Адрес страницы без перезагрузки: #/pano/<адрес>, #/place/<место> или пусто. null — не трогать. */
+  function setHash(h) {
+    if (h === null) return;
+    try { history.replaceState(null, '', location.pathname + location.search + (h ? '#/' + h : '')); } catch { /* адрес не обновится — не страшно */ }
+  }
+  function lastPano() { const id = store.get(lastKey, null); return id && map.panos.find((p) => p.id === id); }
+  function arrived(p) {
+    setHash('pano/' + panoKey(p)); store.set(lastKey, p.id);
+  }
   function openPano(id, face) {
-    const p = map.panos.find((x) => x.id === id); if (!p) return;
-    const nb = neighbors(map, id);
+    const p = map.panos.find((x) => x.id === id);
+    if (!p) return toast('Этой точки обзора больше нет на карте');
+    if (S.busy) return;
+    const nb = neighbors(map, id), tok = ++S.tok;
     S.look = { type: 'pano', id, plan: { x: p.x, y: p.y } };
     const center = stadium ? { x: ST.cx, y: ST.cy } : null;
-    scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, face || (center && Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? center : nb[0]) || center || { x: p.x + 1, y: p.y });
-    scene.setPhoto(p.img || null, p.photoRot); scene.setArrows(nb); scene.preload(nb.map((q) => q.img));
-    enterLookUI(p.name, panoSub(p), panoChips(p)); buildMini(); setEmbed(p);
+    scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, face || (center && Math.hypot(p.x - ST.cx, p.y - ST.cy) < 260 ? center : nb[0]) || center || { x: p.x + 1, y: p.y }, face ? {} : startView(p) || {});
+    if (p.img) {
+      loading(true);
+      scene.setPhoto(p.img, p.photoRot).then((ok) => {
+        if (tok !== S.tok) return;
+        if (ok) loading(false); else loading('error', () => openPano(id, face), () => loading(false));
+      });
+    } else { scene.setPhoto(null); loading(false); }
+    scene.setArrows(arrowItems(p, nb)); scene.preload(nb.map((q) => q.img));
+    enterLookUI(p.name, panoSub(p), panoChips(p)); buildMini(); setEmbed(p); arrived(p);
     mascot.guide(p.guide);   // маскот рассказывает об этом месте (текст точки задаёт админ)
   }
-  function glide(id) {
-    if (!S.look || S.look.type !== 'pano' || scene.anim || scene.gliding) return;
-    const q = map.panos.find((x) => x.id === id); if (!q) return;
+  async function glide(id, noPhoto) {
+    // один переход за раз: повторные нажатия, пока идёт загрузка или движение, игнорируются
+    if (!S.look || S.look.type !== 'pano' || S.busy || scene.anim || scene.gliding) return;
+    const q = map.panos.find((x) => x.id === id);
+    if (!q) return toast('Переход ведёт на точку, которой уже нет');
+    S.busy = true; const tok = ++S.tok;
+    let url = noPhoto ? null : q.img || null;
+    if (url) {
+      // сначала дожидаемся фото следующей точки — так между панорамами не мелькает чёрный экран или 3D-модель
+      loading(true);
+      const tex = await scene.tryTex(url);
+      if (tok !== S.tok || !S.look) return;
+      if (!tex) { S.busy = false; loading('error', () => glide(id), () => { loading(false); glide(id, true); }); return; }
+      loading(false);
+    }
     scene.setArrows([]); $('#lkChips').innerHTML = ''; setEmbed(null);
-    // фото следующей точки переходит в кадр плавно, без промежуточного показа 3D-модели
     scene.glideTo(q.x, q.y, elevOf(map, q) + (q.z || 0) + 1.6, () => {
+      S.busy = false;
+      if (tok !== S.tok) return;
       S.look = { type: 'pano', id, plan: { x: q.x, y: q.y } };
-      const nb = neighbors(map, id); scene.setArrows(nb); scene.preload(nb.map((n) => n.img));
-      $('#lkName').textContent = q.name; $('#lkSub').textContent = panoSub(q); $('#lkChips').innerHTML = panoChips(q); setEmbed(q);
+      const nb = neighbors(map, id); scene.setArrows(arrowItems(q, nb)); scene.preload(nb.map((n) => n.img));
+      $('#lkName').textContent = q.name; $('#lkSub').textContent = panoSub(q); $('#lkChips').innerHTML = panoChips(q); setEmbed(q); arrived(q);
       mascot.guide(q.guide);
-    }, { url: q.img, rot: q.photoRot });
+    }, { url, rot: q.photoRot });
+    if (!scene.gliding) S.busy = false;   // переход не начался (например, вышли из панорамы)
+  }
+
+  // ---------- звук, полный экран, снимок, ссылка ----------
+  function syncSound() {
+    const on = soundOn();
+    root.querySelectorAll('[data-act="sound"]').forEach((b) => { b.setAttribute('aria-pressed', on); b.innerHTML = icon(on ? 'volume' : 'mute'); b.title = on ? 'Звук включён — выключить' : 'Звук выключен — включить'; });
+  }
+  function fullscreen() {
+    const el = root.querySelector('.vis');
+    if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+    if (!el.requestFullscreen || document.fullscreenEnabled === false) return toast('Полноэкранный режим недоступен: браузер или страница, куда встроена карта, его не разрешает', 5000);
+    el.requestFullscreen().catch(() => toast('Браузер не разрешил полноэкранный режим', 4000));
+  }
+  function shot() {
+    if (S.look && !$('.pano-embed', root).hidden) return toast('Панораму Google или YouTube сохранить нельзя: браузер не даёт доступа к чужому окну. Сделайте снимок экрана средствами системы.', 6000);
+    if (S.view === '2d') return toast('Снимок сохраняется из 3D-вида и панорам — переключитесь на 3D', 4000);
+    try {
+      const href = scene.snapshot(), name = (S.look ? $('#lkName', root).textContent : title) || 'karta';
+      Object.assign(document.createElement('a'), { href, download: `${slugify(name)}-${new Date().toISOString().slice(0, 10)}.jpg` }).click();
+      toast('Снимок сохранён');
+    } catch { toast('Не удалось сохранить снимок: фото загружено с другого сайта, браузер его не отдаёт', 5000); }
+  }
+  async function share() {
+    const url = location.href, name = $('#lkName', root).textContent;
+    try {
+      if (navigator.share) await navigator.share({ title: `${name} · ${title}`, url });
+      else { await navigator.clipboard.writeText(url); toast('Ссылка на панораму скопирована'); }
+    } catch (e) { if (e?.name !== 'AbortError') toast('Скопируйте адрес из строки браузера', 4000); }
+  }
+
+  // ---------- «Пиксельная охота» ----------
+  function questCard() {
+    if (!questItems.length) return '';
+    const n = found.size, total = questItems.length;
+    return `<div class="quest-card"><img src="${PIXEL}" alt=""><div class="t"><b>Пиксельная охота · ${n} из ${total}</b>
+      <span>${n === total ? 'Все пиксели найдены — вы настоящий охотник!' : 'Пиксели ТТК спрятаны в панорамах. Осматривайтесь и нажимайте на них.'}${me ? '' : ' <a href="admin.html#/register">Зарегистрируйтесь</a>, чтобы попасть в таблицу лидеров.'}</span>
+      <div class="qbar"><i style="width:${Math.round((n / total) * 100)}%"></i></div></div>
+      <button class="btn sm" data-act="leaders">Лидеры</button></div>`;
+  }
+  async function syncQuest() {
+    try {
+      const r = await api.questMine(), local = [...found].filter((id) => !r.found.includes(id));
+      r.found.forEach((id) => found.add(id));
+      if (local.length) await api.questFound(local);   // нашли до входа — засчитываем в профиль
+      store.set(qKey, [...found]); scene.setQuestFound(found);
+      if (!S.look && !S.sel && !S.list) home();
+    } catch { /* без сети прогресс хранится в браузере */ }
+  }
+  function catchPixel(id) {
+    if (found.has(id) || !questItems.some((p) => p.id === id)) return;
+    found.add(id); store.set(qKey, [...found]); scene.setQuestFound(found);
+    const n = found.size, total = questItems.length;
+    if (me && !pub.draft) api.questFound([id]).catch(() => {});
+    const px = (k) => `${k} ${k % 10 === 1 && k % 100 !== 11 ? 'пиксель' : [2, 3, 4].includes(k % 10) && ![12, 13, 14].includes(k % 100) ? 'пикселя' : 'пикселей'}`;
+    toast(n === total ? (total === 1 ? 'Пиксель найден — охота завершена!' : `Найдены все ${px(total)}!`) : `Пиксель найден: ${n} из ${total}`, 3500);
+    mascot.guide(n === total ? `Невероятно! Ты нашёл ${total === 1 ? 'пиксель' : 'все ' + px(total)} ТТК!\nЗагляни в таблицу лидеров.` : `Есть! Пиксель ТТК пойман — ${n} из ${total}.\nОстальные прячутся в других панорамах.`);
+  }
+  async function leaders() {
+    const r = await api.questLeaders().catch(() => ({ leaders: [], total: questItems.length }));
+    sheet.set(`<div class="row nowrap"><button class="iconbtn flat" data-act="home" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">Пиксельная охота · лидеры</h2></div>
+      ${r.leaders.length ? `<ol class="leaders">${r.leaders.map((l) => `<li><b>${esc(l.name)}</b><span>${l.found} из ${r.total}${l.done ? ' · все!' : ''}</span></li>`).join('')}</ol>` : '<p class="cap">Пока никто не нашёл ни одного пикселя — будьте первым!</p>'}
+      <p class="cap">Показываем только имя, которое человек указал при регистрации.</p>`, 'half');
   }
   function stepToward(pt) {
     const p = map.panos.find((x) => x.id === S.look.id), a = Math.atan2(pt.y - p.y, pt.x - p.x);
@@ -329,7 +470,15 @@ export async function mountVisitor(root, api) {
     if (a === 'seatView') seatView(S.sel.slice(4));
     if (a === 'cylView') { const p = placeOf(map, S.sel); if (p?.obj?.pano) import('../core/cylpano.js').then(({ openCylPano }) => { openCylPano({ url: p.obj.pano, title: p.name, onClose: () => mascot.leave() }); mascot.guide(p.obj.guide); }); }
     if (a === 'exitLook') exitLook();
+    if (a === 'sound') { setSound(!soundOn()); syncSound(); toast(soundOn() ? 'Звук включён' : 'Звук выключен'); }
+    if (a === 'fullscreen') fullscreen();
+    if (a === 'shot') shot();
+    if (a === 'share') share();
+    if (a === 'leaders') leaders();
+    if (a === 'ldRetry') ldAct.retry?.();
+    if (a === 'ldSkip') ldAct.skip?.();
   });
+  document.addEventListener('fullscreenchange', () => root.querySelectorAll('[data-act="fullscreen"]').forEach((b) => b.setAttribute('aria-pressed', !!document.fullscreenElement)), { signal: window.__ac?.signal });
   root.addEventListener('change', (e) => {
     if (e.target.id === 'rFrom') { S.routeFrom = e.target.value; routeSheet(); }
     if (e.target.id === 'lySeats') { map.style.realSeats = e.target.checked; scene.setMap(map); }
@@ -353,6 +502,12 @@ export async function mountVisitor(root, api) {
     if (e.key === 'ArrowUp' && S.look?.type === 'pano' && scene.look) { const L = scene.look; stepToward({ x: L.plan.x + Math.cos(L.yaw) * 10, y: L.plan.y + Math.sin(L.yaw) * 10 }); }
   }, { signal: window.__ac?.signal });
   // ссылка на место: #/place/A105 или #/place/m1
-  const deep = location.hash.match(/^#\/place\/(.+)$/);
-  if (deep) { const ref = /^[ABCD]\d{3}$/.test(deep[1]) ? 'sec:' + deep[1] : deep[1]; card(ref); show(ref); }
+  const deep = hash0.match(/^#\/place\/([\w-]+)$/);
+  if (deep) { const ref = /^[ABCD]\d{3}$/.test(deep[1]) ? 'sec:' + deep[1] : deep[1]; if (placeOf(map, ref)) { card(ref); show(ref); } else toast('Место по ссылке не найдено — возможно, его убрали с карты', 5000); }
+  // ссылка на панораму: #/pano/<адрес> (или внутренний номер точки)
+  const dp = hash0.match(/^#\/pano\/([\w-]+)$/);
+  if (dp) {
+    const p = map.panos.find((x) => x.slug === dp[1]) || map.panos.find((x) => x.id === dp[1]);
+    if (p) openPano(p.id); else { setHash(''); toast('Панорама по ссылке не найдена — возможно, её удалили или сменили адрес', 5000); }
+  }
 }

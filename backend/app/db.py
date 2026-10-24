@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   name TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('viewer','editor','admin')),
+  role TEXT NOT NULL CHECK (role IN ('user','viewer','editor','admin')),
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS venues (
@@ -55,6 +55,27 @@ CREATE TABLE IF NOT EXISTS venue_locks (
   since TEXT NOT NULL,
   seen TEXT NOT NULL
 );
+-- приглашения администраторов и сотрудников: в базе только хэш одноразового токена
+CREATE TABLE IF NOT EXISTS invites (
+  id INTEGER PRIMARY KEY,
+  email TEXT NOT NULL COLLATE NOCASE,
+  role TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  used_by INTEGER REFERENCES users(id),
+  revoked_at TEXT
+);
+-- «Пиксельная охота»: какие секреты на карте нашёл посетитель
+CREATE TABLE IF NOT EXISTS quest_finds (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  venue_id INTEGER NOT NULL REFERENCES venues(id),
+  item_id TEXT NOT NULL,
+  found_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, venue_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS audit_events (
   id INTEGER PRIMARY KEY,
   user_id INTEGER REFERENCES users(id),
@@ -86,6 +107,7 @@ MIGRATIONS = {
 
 def migrate(con: sqlite3.Connection) -> None:
     con.executescript(SCHEMA)
+    widen_roles(con)
     for table, cols in MIGRATIONS.items():
         have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
         for name, ddl in cols.items():
@@ -95,6 +117,30 @@ def migrate(con: sqlite3.Connection) -> None:
     for u in con.execute("SELECT id, email FROM users WHERE handle IS NULL").fetchall():
         con.execute("UPDATE users SET handle = ? WHERE id = ?", (free_handle(con, u["email"].split("@")[0]), u["id"]))
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_handle ON users (handle)")
+
+
+def widen_roles(con: sqlite3.Connection) -> None:
+    """Старые базы знали только роли сотрудников. Для регистрации посетителей нужна роль 'user': ограничение
+    CHECK в SQLite не меняется на месте, поэтому таблица пересоздаётся с теми же данными (копия базы снята при запуске)."""
+    row = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+    if not row or "'user'" in row["sql"]:
+        return
+    new_sql = row["sql"].replace("CHECK (role IN ('viewer','editor','admin'))", "CHECK (role IN ('user','viewer','editor','admin'))")
+    new_sql = re.sub(r'^CREATE TABLE "?users"?', "CREATE TABLE users_new", new_sql)
+    con.commit()
+    con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        con.execute("BEGIN")
+        con.execute(new_sql)
+        con.execute("INSERT INTO users_new SELECT * FROM users")
+        con.execute("DROP TABLE users")
+        con.execute("ALTER TABLE users_new RENAME TO users")
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        con.execute("PRAGMA foreign_keys = ON")
 
 
 def free_handle(con, base: str, skip_id: int = 0) -> str:

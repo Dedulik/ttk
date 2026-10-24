@@ -1,15 +1,44 @@
 """Вход и личный кабинет: профиль, адрес личной ссылки, смена пароля, выход на всех устройствах, своя история действий."""
 import re
 
-from flask import Blueprint, g, request
+from flask import Blueprint, current_app, g, request
 
-from ..db import audit, get_db, many, now, one, run
+from ..db import audit, free_handle, get_db, many, now, one, run
 from ..errors import ApiError
 from ..security import (MAX_FAILS, check_password, create_token, hash_password, ip_blocked, ip_failed, is_locked,
-                        lock_until, public_user, require_role, verify_password)
+                        lock_until, public_user, rate, require_role, verify_password)
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,29}$")
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,}$")
+
+
+@bp.post("/register")
+def register():
+    """Регистрация посетителя. Роль всегда 'user': поля role/is_admin из запроса игнорируются —
+    сотрудником или администратором можно стать только по приглашению."""
+    if not current_app.config["ALLOW_REGISTRATION"]:
+        raise ApiError(403, "Регистрация сейчас закрыта")
+    ip = request.remote_addr or ""
+    rate(f"reg:{ip}", 5, 3600)                       # не больше 5 регистраций в час с одного адреса
+    body = request.get_json(silent=True) or {}
+    if body.get("website"):                          # скрытое поле-ловушка: его заполняют только боты
+        raise ApiError(400, "Не удалось зарегистрироваться")
+    email = str(body.get("email", "")).strip().lower()
+    name = str(body.get("name", "")).strip()[:80]
+    if not EMAIL_RE.match(email) or len(email) > 200:
+        raise ApiError(422, "Проверьте адрес почты")
+    if len(name) < 2:
+        raise ApiError(422, "Как к вам обращаться? Имя — от 2 символов")
+    pw = check_password(body.get("password"))
+    if one("SELECT 1 FROM users WHERE email = ?", email):
+        raise ApiError(409, "Эта почта уже зарегистрирована — войдите или восстановите доступ у администратора")
+    uid = run("INSERT INTO users (email, name, password_hash, role, created_at, password_changed_at, handle, last_login_at) VALUES (?,?,?,?,?,?,?,?)",
+              email, name, hash_password(pw), "user", now(), now(), free_handle(get_db(), email.split("@")[0]), now())
+    audit(uid, "register", email)
+    get_db().commit()
+    user = one("SELECT * FROM users WHERE id = ?", uid)
+    return {"token": create_token(user), "user": public_user(user, full=True)}, 201
 
 
 @bp.post("/login")
@@ -42,13 +71,13 @@ def login():
 
 
 @bp.get("/me")
-@require_role("viewer")
+@require_role("user")
 def me():
     return public_user(g.user, full=True)
 
 
 @bp.patch("/me")
-@require_role("viewer")
+@require_role("user")
 def update_me():
     """Своё имя и пароль. Новый пароль требует текущий и завершает остальные сессии."""
     b = request.get_json(silent=True) or {}
@@ -77,7 +106,7 @@ def update_me():
 
 
 @bp.post("/logout-all")
-@require_role("viewer")
+@require_role("user")
 def logout_all():
     run("UPDATE users SET token_version = token_version + 1 WHERE id = ?", g.user["id"])
     audit(g.user["id"], "logout_all")
@@ -86,7 +115,7 @@ def logout_all():
 
 
 @bp.get("/me/activity")
-@require_role("viewer")
+@require_role("user")
 def my_activity():
     rows = many("SELECT action, details, ip, created_at FROM audit_events WHERE user_id = ? ORDER BY id DESC LIMIT 50", g.user["id"])
     return [dict(r) for r in rows]

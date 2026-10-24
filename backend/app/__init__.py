@@ -3,6 +3,7 @@
 Один процесс отдаёт и API (/api/...), и сайт (frontend/), и загруженные фото (/uploads/...).
 """
 import base64
+import mimetypes
 import hashlib
 import json
 import re
@@ -13,7 +14,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from . import config
-from .api import admin, auth, maps, uploads, users
+from .api import admin, auth, invites, maps, quest, uploads, users
 from .db import close_db, connect, migrate, now
 from .errors import ApiError
 from .security import hash_password, load_secret, restrict
@@ -70,6 +71,9 @@ def inline_script_hashes(front: Path) -> str:
     return " ".join(sorted(out))
 
 
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+
 def create_app(overrides: dict | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config.update(config.load())
@@ -83,7 +87,7 @@ def create_app(overrides: dict | None = None) -> Flask:
            "frame-src https://www.google.com https://maps.google.com https://www.youtube-nocookie.com https://www.youtube.com; object-src 'none'; base-uri 'self'; "
            "form-action 'self'; frame-ancestors 'self'")
 
-    for bp in (auth.bp, maps.bp, users.bp, uploads.bp, admin.bp):
+    for bp in (auth.bp, maps.bp, users.bp, uploads.bp, admin.bp, invites.bp, quest.bp):
         app.register_blueprint(bp)
     app.teardown_appcontext(close_db)
 
@@ -108,6 +112,8 @@ def create_app(overrides: dict | None = None) -> Flask:
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
+        if request.path.endswith("/sw.js"):
+            resp.headers["Cache-Control"] = "no-cache"      # новая версия сервис-воркера подхватывается сразу
         if resp.mimetype == "text/html":
             resp.headers["Content-Security-Policy"] = csp
         return resp

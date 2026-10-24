@@ -40,3 +40,10 @@ window.__remount = () => {
 };
 window.addEventListener('hashchange', () => window.__remount());
 mount();
+
+// PWA: карту можно установить на телефон, открытые ранее карты работают без сети.
+// Сервис-воркер кэширует только публичное (код, опубликованные карты, фото) — данные входа и админки никогда.
+if ('serviceWorker' in navigator && !window.__FORCE_DEMO__ && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  navigator.serviceWorker.register('sw.js').catch(() => { /* без офлайн-режима карта тоже работает */ });
+}
+window.addEventListener('offline', () => import('./core/ui.js').then(({ toast }) => toast('Нет сети — показываю сохранённую версию карты', 4000)));

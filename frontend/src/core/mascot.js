@@ -37,7 +37,17 @@ export function guideLines(text) {
   return lines.length === 1 ? lines[0].split(/(?<=[.!?…])\s+/).filter(Boolean) : lines;
 }
 
-export function createMascot(host, settings) {
+// Звук маскота посетитель включает сам (кнопка с динамиком); по умолчанию — выключен.
+const SOUND_KEY = 'arena.sound';
+export const soundOn = () => { try { return localStorage.getItem(SOUND_KEY) === '1'; } catch { return false; } };
+export function setSound(on) {
+  try { localStorage.setItem(SOUND_KEY, on ? '1' : '0'); } catch { /* запомнить не получится — работает до перезагрузки */ }
+  window.dispatchEvent(new CustomEvent('soundchange', { detail: on }));
+}
+
+/** opts.sound — функция «можно ли играть звук» (в конструкторе админ слушает всегда). */
+export function createMascot(host, settings, opts = {}) {
+  const allowed = opts.sound || soundOn;
   let S = settings, mode = 'peek', idleT = null, typing = 0, lastPose = -1, lastPhrase = -1;
   const el = document.createElement('div');
   el.className = 'mascot';
@@ -71,7 +81,7 @@ export function createMascot(host, settings) {
     for (let i = 0; i < lines.length; i++) {
       if (poses) setPose();
       const p = document.createElement('p'); textEl.append(p);
-      audio.currentTime = 0; audio.play().catch(() => {});   // звук идёт всё время, пока печатается текст
+      if (allowed()) { audio.currentTime = 0; audio.play().catch(() => {}); }   // звук идёт, пока печатается текст
       for (const ch of lines[i]) {
         if (t !== typing) return false;
         // если человек прокрутил облако вверх — не дёргаем его вниз
@@ -127,6 +137,8 @@ export function createMascot(host, settings) {
   function leave() { if (mode !== 'peek') hide(); }
 
   el.querySelector('.mascot-peek').addEventListener('click', greet);
+  const onSound = (e) => { if (!e.detail) audio.pause(); };
+  window.addEventListener('soundchange', onSound);
   el.querySelector('.mascot-x').addEventListener('click', () => {
     closeCloud();
     if (mode === 'greet') { clearTimeout(idleT); idleT = setTimeout(hide, IDLE_MS); }
@@ -134,6 +146,6 @@ export function createMascot(host, settings) {
   return {
     el, greet, guide, leave,
     setSettings(s) { S = s; apply(); if (!S.enabled) hide(); },
-    destroy() { clearTimeout(idleT); typing++; audio.pause(); el.remove(); },
+    destroy() { clearTimeout(idleT); typing++; audio.pause(); window.removeEventListener('soundchange', onSound); el.remove(); },
   };
 }

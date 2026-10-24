@@ -2,7 +2,7 @@
 // Жесты: один палец — сдвиг (или инструмент), два пальца — масштаб, колесо — масштаб к курсору.
 import { CATS, PCATS, catColor, floorById, floorOf, floorStep, floorsSorted, kindOf, mapBox, poiColor, sectorColor, shapeArea, shapeBox, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, ring, secMid, secPts, sp } from './stadium.js';
-import { iconUrl } from './icons.js';
+import { iconUrl, pointIconUrl } from './icons.js';
 import { esc, hideTip, showTip } from './ui.js';
 
 const pts = (p) => p.map((q) => `${(+q[0]).toFixed(2)},${(+q[1]).toFixed(2)}`).join(' ');
@@ -167,18 +167,19 @@ export class Plan2D {
     if (o.showPanos && on('panos')) {
       for (const [i, j] of m.links) { const a = m.panos.find((p) => p.id === i), b = m.panos.find((p) => p.id === j); if (a && b && (here(a) || here(b))) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--pano)" stroke-width="${fs(2.5)}" stroke-dasharray="${fs(6)} ${fs(5)}" opacity=".85" style="pointer-events:none"/>`; }
       // точки обзора — значок 360°; название не пишем, оно всплывает при наведении
-      const pano = iconUrl('pano');
       for (const p of m.panos.filter(here)) {
-        const sel = o.sel === p.id || o.linkFrom?.() === p.id, r = (sel ? 11 : 9) * px;
+        // кружок стал меньше, но прозрачная зона нажатия — прежние 16 px
+        const sel = o.sel === p.id || o.linkFrom?.() === p.id, r = (sel ? 9.5 : 7.5) * px, pano = pointIconUrl(p, 'pano');
         h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="var(--pano)" fill-opacity=".2"/>` : ''}
           <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="var(--pano)" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${pano}" x="${p.x - r * 0.78}" y="${p.y - r * 0.78}" width="${r * 1.56}" height="${r * 1.56}" style="pointer-events:none"/></g>`;
       }
     }
     for (const p of on('pois') ? m.pois.filter(here) : []) {
       if (o.filter && p.cat !== o.filter) continue;
-      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 14 : 12) * px, u = iconUrl(p.cat);
+      if (p.cat === 'quest' && !o.admin) continue;   // пиксели охоты ищут в панорамах, не на плане
+      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 12 : 10) * px, u = pointIconUrl(p, p.cat);
       // метка — значок ТТК на белом круге (или прежний цветной кружок, если значка для типа нет); название — при наведении
-      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${r * 1.5}" fill="transparent"/>${u
+      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${fs(18)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(18)}" fill="var(--accent)" fill-opacity=".16"/>` : ''}${u
         ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="${sel ? 'var(--ink)' : 'var(--accent)'}" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${u}" x="${p.x - r * 0.68}" y="${p.y - r * 0.68}" width="${r * 1.36}" height="${r * 1.36}" style="pointer-events:none"/>`
         : `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${fs(2)}"/><text x="${p.x}" y="${p.y}" font-size="${fs(g.length > 1 ? 8 : 11)}" class="t-glyph">${esc(g)}</text>`}</g>`;
     }

@@ -9,6 +9,11 @@ from app import create_app
 SLUG = "rostov-arena"
 
 
+def png_header(w, h):
+    """Минимальный PNG-заголовок с нужным размером — серверу достаточно сигнатуры и IHDR."""
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + w.to_bytes(4, "big") + h.to_bytes(4, "big") + b"\x08\x06\x00\x00\x00" + b"0" * 16
+
+
 class ApiTest(unittest.TestCase):
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())
@@ -89,7 +94,7 @@ class ApiTest(unittest.TestCase):
         c = self.c
         editor = self.login("editor@arena.local", "editor12345")
         viewer = self.login("viewer@arena.local", "viewer12345")
-        png = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+        png = png_header(64, 48)
         r = c.post("/api/uploads", data={"file": (io.BytesIO(png), "a.png", "image/png")}, headers=editor, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 201)
         self.assertEqual(c.get(r.get_json()["url"]).status_code, 200)
@@ -197,6 +202,117 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(c.delete(f"/api/venues/{cp['slug']}", json={"confirm": cp["slug"]}, headers=admin).status_code, 204)
         self.assertEqual(c.get(f"/api/venues/{cp['slug']}/map").status_code, 404)
 
+    def test_registration_cannot_grant_admin(self):
+        """Регистрация даёт только роль «посетитель»; попытки подсунуть роль игнорируются, к админке и черновикам доступа нет."""
+        c = self.c
+        r = c.post("/api/auth/register", json={"email": "Guest@Mail.ru", "name": "Гость", "password": "guestpass1", "role": "admin", "is_admin": True})
+        self.assertEqual(r.status_code, 201, r.get_json())
+        self.assertEqual(r.get_json()["user"]["role"], "user")
+        guest = {"Authorization": "Bearer " + r.get_json()["token"]}
+        self.assertEqual(c.get("/api/auth/me", headers=guest).get_json()["email"], "guest@mail.ru")
+        for method, url in (("get", f"/api/venues/{SLUG}/draft"), ("get", "/api/users"), ("post", "/api/invites"), ("get", "/api/admin/audit"), ("post", f"/api/venues/{SLUG}/lock")):
+            self.assertIn(getattr(c, method)(url, headers=guest, json={}).status_code, (401, 403), url)
+        # повысить себя через «изменение профиля» тоже нельзя
+        c.patch("/api/auth/me", json={"role": "admin", "name": "Гость"}, headers=guest)
+        self.assertEqual(c.get("/api/auth/me", headers=guest).get_json()["role"], "user")
+        # повтор почты, слабый пароль, бот-ловушка
+        self.assertEqual(c.post("/api/auth/register", json={"email": "guest@mail.ru", "name": "Ещё", "password": "guestpass1"}).status_code, 409)
+        self.assertEqual(c.post("/api/auth/register", json={"email": "x@mail.ru", "name": "Икс", "password": "123"}).status_code, 422)
+        self.assertEqual(c.post("/api/auth/register", json={"email": "bot@mail.ru", "name": "Бот", "password": "botpass123", "website": "spam"}).status_code, 400)
+        # с одного адреса — не больше 5 регистраций в час
+        codes = [c.post("/api/auth/register", json={"email": f"u{i}@mail.ru", "name": "Пользователь", "password": "userpass1"}).status_code for i in range(6)]
+        self.assertIn(429, codes)
+
+    def test_admin_invites(self):
+        c = self.c
+        admin = self.login("admin@arena.local", "admin12345")
+        editor = self.login("editor@arena.local", "editor12345")
+        # приглашать может только администратор
+        self.assertEqual(c.post("/api/invites", json={"email": "new.admin@arena.local", "role": "admin"}, headers=editor).status_code, 403)
+        self.assertEqual(c.post("/api/invites", json={"email": "x@arena.local", "role": "superuser"}, headers=admin).status_code, 422)
+        r = c.post("/api/invites", json={"email": "new.admin@arena.local", "role": "admin"}, headers=admin)
+        self.assertEqual(r.status_code, 201, r.get_json())
+        body = r.get_json()
+        self.assertFalse(body["emailed"])                 # SMTP в тестах не настроен — ссылку получает админ
+        token = body["link"].split("#/invite/")[1]
+        # в базе — только хэш токена
+        from app.db import connect
+        con = connect(self.app.config["DB_PATH"])
+        self.assertIsNone(con.execute("SELECT 1 FROM invites WHERE token_hash = ?", (token,)).fetchone())
+        con.close()
+        self.assertEqual(c.get("/api/invites/accept/wrong-token").status_code, 404)
+        info = c.get(f"/api/invites/accept/{token}").get_json()
+        self.assertEqual((info["email"], info["role"], info["exists"]), ("new.admin@arena.local", "admin", False))
+        # роль из запроса игнорируется — берётся из приглашения
+        acc = c.post(f"/api/invites/accept/{token}", json={"name": "Новый админ", "password": "newadmin123", "role": "user"})
+        self.assertEqual(acc.status_code, 200, acc.get_json())
+        self.assertEqual(acc.get_json()["user"]["role"], "admin")
+        # одноразовое
+        self.assertEqual(c.post(f"/api/invites/accept/{token}", json={"name": "Ещё раз", "password": "newadmin123"}).status_code, 410)
+        # посетитель повышается до редактора только с паролем своей учётной записи
+        c.post("/api/auth/register", json={"email": "guest2@mail.ru", "name": "Гость", "password": "guestpass1"})
+        t2 = c.post("/api/invites", json={"email": "guest2@mail.ru", "role": "editor"}, headers=admin).get_json()["link"].split("#/invite/")[1]
+        self.assertTrue(c.get(f"/api/invites/accept/{t2}").get_json()["exists"])
+        self.assertEqual(c.post(f"/api/invites/accept/{t2}", json={"password": "wrong"}).status_code, 403)
+        self.assertEqual(c.post(f"/api/invites/accept/{t2}", json={"password": "guestpass1"}).get_json()["user"]["role"], "editor")
+        # истёкшее и отозванное приглашения не работают
+        t3 = c.post("/api/invites", json={"email": "late@arena.local", "role": "viewer"}, headers=admin).get_json()["link"].split("#/invite/")[1]
+        con = connect(self.app.config["DB_PATH"])
+        con.execute("UPDATE invites SET expires_at = '2000-01-01T00:00:00+00:00' WHERE email = 'late@arena.local'")
+        con.commit(); con.close()
+        self.assertEqual(c.get(f"/api/invites/accept/{t3}").status_code, 410)
+        inv = c.post("/api/invites", json={"email": "rev@arena.local", "role": "viewer"}, headers=admin).get_json()
+        c.delete(f"/api/invites/{inv['invite']['id']}", headers=admin)
+        self.assertEqual(c.get("/api/invites/accept/" + inv["link"].split("#/invite/")[1]).status_code, 410)
+        self.assertTrue(any(i["state"] == "used" for i in c.get("/api/invites", headers=admin).get_json()))
+
+    def test_map_sanitizing_and_quest(self):
+        c = self.c
+        admin = self.login("admin@arena.local", "admin12345")
+        d = c.get(f"/api/venues/{SLUG}/draft", headers=admin).get_json()
+        data, rev = d["data"], d["revision"]
+        data["pois"] += [
+            {"id": "x1", "name": "<img src=x onerror=alert(1)>", "cat": "info", "x": 1, "y": 1, "photo": "javascript:alert(1)", "color": "red;}<script>"},
+            {"id": "q1", "name": "Пиксель", "cat": "quest", "x": 5, "y": 5}, {"id": "q2", "name": "Пиксель 2", "cat": "quest", "x": 6, "y": 6},
+        ]
+        data["panos"][0]["embed"] = '"><script>alert(1)</script>'
+        r = c.put(f"/api/venues/{SLUG}/draft", json={"data": data, "base_revision": rev}, headers=admin)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        saved = r.get_json()["data"]
+        x1 = [p for p in saved["pois"] if p["id"] == "x1"][0]
+        self.assertNotIn("photo", x1)                    # опасная ссылка не сохранилась
+        self.assertNotIn("color", x1)
+        self.assertNotIn("embed", saved["panos"][0])
+        self.assertEqual(x1["name"], "<img src=x onerror=alert(1)>")   # текст хранится как есть — экранируется при выводе
+        bad = dict(saved, pois=saved["pois"] + [{"id": 'bad id"', "name": "x", "cat": "info", "x": 0, "y": 0}])
+        self.assertEqual(c.put(f"/api/venues/{SLUG}/draft", json={"data": bad, "base_revision": r.get_json()["revision"]}, headers=admin).status_code, 422)
+        c.post(f"/api/venues/{SLUG}/publish", json={}, headers=admin)
+        # охота: засчитываются только настоящие пиксели с опубликованной карты
+        reg = c.post("/api/auth/register", json={"email": "hunter@mail.ru", "name": "Охотник", "password": "hunter123"}).get_json()
+        h = {"Authorization": "Bearer " + reg["token"]}
+        self.assertEqual(c.post(f"/api/quest/{SLUG}/found", json={"items": ["q1"]}).status_code, 401)
+        res = c.post(f"/api/quest/{SLUG}/found", json={"items": ["q1", "q1", "fake", "x1"]}, headers=h).get_json()
+        self.assertEqual((res["found"], res["total"], res["added"]), (["q1"], 2, 1))
+        c.post(f"/api/quest/{SLUG}/found", json={"items": ["q2"]}, headers=h)
+        lead = c.get(f"/api/quest/{SLUG}/leaders").get_json()
+        self.assertEqual((lead["leaders"][0]["name"], lead["leaders"][0]["found"], lead["leaders"][0]["done"]), ("Охотник", 2, True))
+        self.assertNotIn("email", lead["leaders"][0])
+
+    def test_pano_upload_checks(self):
+        c = self.c
+        editor = self.login("editor@arena.local", "editor12345")
+
+        def up(data, kind=None):
+            form = {"file": (io.BytesIO(data), "p.png", "image/png")}
+            if kind:
+                form["kind"] = kind
+            return c.post("/api/uploads", data=form, headers=editor, content_type="multipart/form-data")
+
+        self.assertEqual(up(png_header(4096, 2048), "pano360").status_code, 201)
+        self.assertEqual(up(png_header(3000, 2000), "pano360").status_code, 422)      # не 2:1
+        self.assertEqual(up(png_header(1024, 512), "pano360").status_code, 422)       # слишком маленькая
+        self.assertEqual(up(png_header(40000, 20000)).status_code, 415)               # больше 16384
+        self.assertEqual(up(png_header(800, 600)).get_json()["width"], 800)
 
 if __name__ == "__main__":
     unittest.main()

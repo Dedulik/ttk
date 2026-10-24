@@ -46,6 +46,8 @@ export const PCATS = {
   participants: { n: 'Зона участников', g: 'У', c: '#e30613' },
   // своя точка: админ прикрепляет к ней длинное фото-панораму, посетитель смотрит её изнутри цилиндра
   custom: { n: 'Своя точка', g: '◎', c: '#0e9f8e' },
+  // «Пиксельная охота»: пиксель ТТК виден посетителям только в панорамах рядом с ним
+  quest: { n: 'Пиксель (охота)', g: '■', c: '#e30613' },
 };
 
 /** Слои карты, которые можно скрывать — в конструкторе любого объекта и у посетителя. */
@@ -205,6 +207,19 @@ export function nearestPano(map, pt, filter = () => true) {
   for (const p of map.panos) { const d = dist(p, pt); if (d < bd && filter(p)) { bd = d; best = p; } }
   return best;
 }
+// Фото 360° и стрелки. Угол «по фото» u = yaw + φ (φ — поворот фото photoRot): он не меняется, когда фото
+// поворачивают, поэтому вручную поставленные стрелки и начальный вид остаются на своих местах на фото.
+const RAD = Math.PI / 180;
+/** Стрелки переходов точки обзора: направление по плану или — если админ поставил стрелку по фото — по фото. */
+export function arrowItems(p, nb) {
+  return nb.map((q) => (p.img && Number.isFinite(p.arrows?.[q.id]) ? { ...q, yaw: (p.arrows[q.id] - (p.photoRot || 0)) * RAD } : q));
+}
+/** Начальный взгляд точки обзора, если админ его запомнил: { yaw, pitch, fov } в координатах сцены. */
+export function startView(p) {
+  const v = p?.view;
+  return v && Number.isFinite(v.u) ? { yaw: (v.u - (p.photoRot || 0)) * RAD, pitch: (Number.isFinite(v.pitch) ? v.pitch : 0) * RAD, fov: Number.isFinite(v.fov) ? v.fov : undefined } : null;
+}
+
 export function neighbors(map, id) {
   return map.links.filter((l) => l.includes(id)).map((l) => map.panos.find((p) => p.id === (l[0] === id ? l[1] : l[0]))).filter(Boolean);
 }
@@ -294,13 +309,28 @@ export function placeOf(map, ref) {
   return null;
 }
 
+// адреса панорам в ссылках — только латиница, цифры и дефис (кириллица в адресе ломается при пересылке)
+const TR = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** «Вход № 3 (Север)» → «vhod-3-sever». */
+export function slugify(s) {
+  return [...String(s || '').toLowerCase()].map((c) => TR[c] ?? c).join('').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'tochka';
+}
+/** Свободный адрес панорамы: при совпадении добавляет -2, -3… */
+export function uniqueSlug(map, base, selfId) {
+  let s = base, n = 2;
+  while (map.panos.some((p) => p.id !== selfId && p.slug === s)) s = `${base.slice(0, 56)}-${n++}`;
+  return s;
+}
+
 export function search(map, q, limit = 12) {
   q = q.trim().toLowerCase();
   if (!q) return [];
   const out = [];
   const secQ = q.replace(/^сектор\s*/, '').toUpperCase();
   if (map.stadium) for (const s of SECTORS) if (s.id.startsWith(secQ) || s.id.replace(/^./, (c) => ({ A: 'А', B: 'В', C: 'С', D: 'Д' })[c] || c).startsWith(secQ)) out.push('sec:' + s.id);
-  for (const p of map.pois) if ((p.name + ' ' + (PCATS[p.cat]?.n || '')).toLowerCase().includes(q)) out.push(p.id);
+  for (const p of map.pois) if (p.cat !== 'quest' && (p.name + ' ' + (PCATS[p.cat]?.n || '')).toLowerCase().includes(q)) out.push(p.id);
+  for (const p of map.panos) if (p.name.toLowerCase().includes(q)) out.push(p.id);
   for (const s of map.shapes) if (s.cat !== 'plaza' && (s.name + ' ' + (CATS[s.cat]?.n || '')).toLowerCase().includes(q)) out.push(s.id);
   return out.slice(0, limit).map((r) => placeOf(map, r));
 }

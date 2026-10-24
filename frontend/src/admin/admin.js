@@ -1,13 +1,14 @@
 // Конструктор карты объекта: построение, точки и панорамы, стадион (если есть), публикация, версии, цвета.
 // Открывается из админ-панели (admin.html#/edit/<адрес объекта>), вход и кабинет — в cabinet.js.
 import { ROLE_NAMES, can } from '../core/api.js';
-import { CATS, KINDS, LAYERS, PALETTE, PCATS, catColor, clone, elevOf, floorById, floorOf, floorsSorted, kindOf, layersFor, visitorLayerMode, mapsEmbed, moveShape, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, shapeLayer, standColor, uid } from '../core/model.js';
+import { CATS, KINDS, LAYERS, PALETTE, PCATS, SLUG_RE, arrowItems, catColor, slugify, startView, uniqueSlug, clone, elevOf, floorById, floorOf, floorsSorted, kindOf, layersFor, visitorLayerMode, mapsEmbed, moveShape, neighbors, poiColor, shapeArea, shapeBox, shapeCenter, shapeLayer, standColor, uid } from '../core/model.js';
 import { Plan2D } from '../core/plan2d.js';
 import { SECTORS, STANDS, ST, secMid, sector, setStadiumCenter } from '../core/stadium.js';
-import { $, Sheet, badge, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
-import { iconUrl } from '../core/icons.js';
+import { $, Sheet, badge, confirmBox, esc, fmtDate, icon, photo, themeButton, toast } from '../core/ui.js';
+import { ICON_CHOICES, ICON_FILES, iconUrl, pointIconUrl } from '../core/icons.js';
 import { DEFAULT_PHRASES, createMascot, mascotSettings } from '../core/mascot.js';
 import { HINTS, TOOLS, createTools } from './tools.js';
+import { checkPanoFile, previewPano } from '../core/panopreview.js';
 
 // ---------------- редактор ----------------
 export function editor(root, api, user, draft, lock = { mine: true }) {
@@ -18,7 +19,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   let map = draft.data, undo = [], redo = [], saveT = null, rebuildT = null, scene = null;
   const state = {
     mode: 'build', tool: 'select', sel: null, view: '2d', panel: null, readonly: !isEditor || !!lockedBy,
-    newKind: 'room', snap: 0.5, wallThick: 0.2, doorWidth: 1.6, stairDir: 'x', poiCat: 'info',
+    newKind: 'room', newW: 8, newH: 6, snap: 0.5, wallThick: 0.2, doorWidth: 1.6, stairDir: 'x', poiCat: 'info',
     dirty: false, saving: false, savedAt: draft.updated_at, savedBy: draft.updated_by, rev: draft.revision, conflict: false,
     under: underlayOf(map), underOp: 0.3, hidden: new Set(), cursor: null, floor: floorsSorted(map)[0].id,
   };
@@ -42,6 +43,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       ${themeButton('iconbtn flat')}
       <button class="iconbtn flat${state.hidden.size ? ' on' : ''}" data-act="layers" aria-label="Слои" title="Слои: что показывать на плане и в 3D">${icon('layers')}</button>
       <button class="iconbtn flat" data-act="view3d" aria-label="3D-просмотр" title="3D-просмотр">${icon('cube')}</button>
+      <a class="btn sm" href="index.html?object=${encodeURIComponent(venue.slug)}&preview=1" target="_blank" rel="noopener" data-act="preview" title="Посмотреть черновик глазами посетителя — без публикации">${icon('eye')}<span class="hide-s">Как посетитель</span></a>
       ${isAdmin ? `<button class="btn sm primary" data-act="panel" data-p="publish">${icon('publish')}<span class="hide-s">Опубликовать</span></button>` : ''}
       <button class="iconbtn flat" data-act="panel" data-p="menu" aria-label="Меню">${icon('more')}</button>
     </header>
@@ -64,6 +66,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${lockedBy ? `<div class="readonly-banner lock-banner">${icon('user')}Сейчас объект редактирует <b>${esc(lockedBy.name)}</b> — вы видите его сохранённые изменения. Править можно будет, когда он выйдет</div>`
           : state.readonly ? '<div class="readonly-banner">Режим наблюдателя: только просмотр</div>' : ''}
         <button class="iconbtn look-exit" data-act="exitLook" hidden aria-label="Выйти из панорамы">${icon('back')}</button>
+        <div class="pano-tune" id="tune" hidden></div>
       </div>
       <section class="sheet"><div class="sheet-grip"><i></i></div><div class="sheet-body"></div></section>
     </div>
@@ -86,6 +89,11 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     changed() { markDirty(); redraw(); rebuildLater(); if (!state.panel) inspector(true); },
     changedLive() { markDirty(); redraw(); syncFields(); },
     redraw, refreshOpt: optbar,
+    /** Спросить перед удалением; у точки обзора — сколько переходов пропадёт. */
+    confirmDelete(sel, o) {
+      const n = sel.type === 'pano' ? map.links.filter((l) => l.includes(sel.id)).length : 0;
+      return confirmBox(`Удалить «${o?.name || NAMES[sel.type]}»?${n ? ` Вместе с ней пропадут переходы: ${n}.` : ''} Отменить можно кнопкой ↶.`);
+    },
   };
   const tools = createTools(ed);
   const plan = new Plan2D(svg, {
@@ -142,6 +150,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     let h = '';
     if (state.view === '3d') { el.hidden = true; return; }
     if (['rect', 'poly', 'ellipse'].includes(t)) h += `<span class="cap">Что рисуем</span>${seg('newKind', state.newKind, Object.entries(KINDS).map(([k, v]) => [k, v.n]))}`;
+    if (['rect', 'ellipse'].includes(t)) h += `<label class="cap opt-num">Ширина <input class="inp sm mono" id="o-nw" type="number" min="0.5" max="2000" step="0.5" value="${state.newW}"></label><label class="cap opt-num">Глубина <input class="inp sm mono" id="o-nh" type="number" min="0.5" max="2000" step="0.5" value="${state.newH}"></label><span class="cap">м — по нажатию</span>`;
     if (t === 'wall') h += `<span class="cap">Толщина</span>${seg('wallThick', state.wallThick, [[0.12, '12 см'], [0.2, '20 см'], [0.4, '40 см']])}`;
     if (t === 'door') h += `<span class="cap">Ширина проёма</span>${seg('doorWidth', state.doorWidth, [[0.9, '0,9 м'], [1.6, '1,6 м'], [3, '3 м'], [6, '6 м']])}`;
     if (t === 'stairs') h += `<span class="cap">Подъём</span>${seg('stairDir', state.stairDir, [['x', '→ вправо'], ['y', '↓ вниз']])}`;
@@ -161,6 +170,13 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   const guideField = (o) => `<div class="field guide-field"><span class="lbl">${icon('chat')}Рассказ маскота</span>
     <textarea class="inp" id="f-guide" rows="4" placeholder="Что маскот расскажет об этом месте. Каждая строка — новая реплика и новая поза" ${dis()}>${esc(o.guide || '')}</textarea>
     <div class="row"><span class="cap">Печатается по букве в облаке, со звуком. Пусто — маскот молчит.</span>${o.guide ? `<button class="btn sm" data-act="mascotGuide">${icon('volume')}Послушать</button>` : ''}</div></div>`;
+  // значок точки: из набора ТТК или свой (PNG/SVG-картинка); по умолчанию — значок типа
+  const iconField = (o, kind) => {
+    const cur = o.iconUrl ? null : o.icon || (ICON_FILES[kind] ? kind : null);
+    return `<div class="field"><span class="lbl">Значок</span><div class="icon-pick">${ICON_CHOICES.map(([k, n]) => `<button class="ipk" data-act="setIcon" data-v="${k}" aria-pressed="${cur === k || (k === 'marker' && cur === 'info')}" title="${n}" aria-label="${n}" ${dis()}><img src="${iconUrl(k)}" alt=""></button>`).join('')}
+      ${o.iconUrl ? `<span class="ipk" aria-pressed="true" title="Свой значок"><img src="${esc(o.iconUrl)}" alt=""></span>` : ''}</div>
+      ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="iconUp">${icon('upload')}Свой значок</button>${o.icon || o.iconUrl ? '<button class="btn sm ghost" data-act="iconReset">Как у типа</button>' : ''}</div>`}</div>`;
+  };
   const photoBlock = (url, act, label) => `${url ? `<img class="thumb" src="${url}" alt="">` : ''}${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="${act}">${icon('upload')}${url ? 'Заменить' : label}</button>${url ? `<button class="btn sm ghost" data-act="${act}Rm">Убрать</button>` : ''}</div>`}`;
 
   function inspector(keepFocus) {
@@ -181,21 +197,21 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${k.walls ? field('Высота стен, м', num('f-height', o.height || k.height, 0.5, 2)) : ''}
         ${field('Текст для посетителей', `<textarea class="inp" id="f-desc" placeholder="Что здесь, часы работы, как пройти" ${dis()}>${esc(o.desc || '')}</textarea>`)}
         <div class="field"><span class="lbl">Фото</span>${photoBlock(o.photo, 'photo', 'Добавить фото')}</div>
-        ${state.readonly ? '' : `<div class="row">${o.cat === 'plaza' ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить</button>`}<button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
+        ${state.readonly ? '' : `<div class="row">${o.cat === 'plaza' ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить</button>`}<button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
     } else if (s.type === 'wall') {
       h = `<div class="insp-head"><span class="glyph sm" style="background:var(--wall-line)">${icon('wall')}</span><h2>Стена</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         <div class="grid2">${field('Толщина, м', num('f-thick', o.thick || 0.2, 0.05, 0.05))}${field('Высота, м', num('f-wh', o.height || 3, 0.5, 1))}</div>
         <div class="field"><span class="lbl">Цвет</span>${swatches(o.color || '#3d3b38', 'wallColor')}</div>
         <p class="cap">${o.pts.length} точек · длина ${o.pts.slice(1).reduce((a, p, i) => a + Math.hypot(p[0] - o.pts[i][0], p[1] - o.pts[i][1]), 0).toFixed(1)} м. Проёмы добавляются инструментом «Дверь».</p>
-        ${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить стену</button>`}`;
+        ${state.readonly ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить стену</button>`}`;
     } else if (s.type === 'door') {
       h = `<div class="insp-head"><span class="glyph sm" style="background:var(--accent)">${icon('door')}</span><h2>Проём</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
-        ${field('Ширина, м', num('f-dw', o.w, 0.1, 0.6))}${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить проём</button>`}`;
+        ${field('Ширина, м', num('f-dw', o.w, 0.1, 0.6))}${state.readonly ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить проём</button>`}`;
     } else if (s.type === 'stairs') {
       h = `<div class="insp-head"><span class="glyph sm" style="background:var(--ink-2)">${icon('stairs')}</span><h2>Лестница</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         <div class="field"><span class="lbl">Подъём</span><div class="chips"><button class="opt" data-act="sdir" data-v="x" aria-pressed="${o.dir === 'x'}" ${dis()}>→ вправо</button><button class="opt" data-act="sdir" data-v="y" aria-pressed="${o.dir === 'y'}" ${dis()}>↓ вниз</button></div></div>
         <div class="grid2">${field('Высота подъёма, м', num('f-rise', o.rise || 3, 0.5, 0.5))}${field('Ширина, м', num('f-w', o.w, 0.5, 0.5))}</div>
-        ${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить лестницу</button>`}`;
+        ${state.readonly ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить лестницу</button>`}`;
     } else if (s.type === 'poi') {
       const col = poiColor(map, o);
       h = `<div class="insp-head">${badge(o.cat, col, PCATS[o.cat]?.g || 'i')}<h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
@@ -203,31 +219,31 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${field('Текст для посетителей', `<textarea class="inp" id="f-mtext" placeholder="Что увидит посетитель, нажав на метку" ${dis()}>${esc(o.text || '')}</textarea>`)}
         <div class="field"><span class="lbl">Тип</span><div class="chips">${Object.entries(PCATS).map(([c, v]) => `<button class="opt" data-act="pcat" data-v="${c}" aria-pressed="${o.cat === c}" ${dis()}>${badge(c, map.style.poi[c] || v.c, v.g, 'sm xs')}${v.n}</button>`).join('')}</div></div>
         <div class="field"><span class="lbl">Цвет</span>${swatches(col, 'poiColor')}</div>
-        <div class="grid3">${field('X, м', num('f-mx', o.x))}${field('Y, м', num('f-my', o.y))}${field('Уровень, м', num('f-mz', o.z || 0, 0.5, 0))}</div>
+        ${iconField(o, o.cat)}
+        <div class="grid2">${field('X, м', num('f-mx', o.x))}${field('Y, м', num('f-my', o.y))}</div>
+        ${o.cat === 'quest' ? '<p class="cap" style="margin:0">Пиксель ТТК для «Пиксельной охоты»: посетители видят его только в панорамах ближе 35 м и ловят нажатием. На плане и в поиске его нет. Найденные пиксели засчитываются после публикации.</p>' : ''}
         ${o.cat === 'custom' ? guideField(o) : ''}
         ${o.cat === 'custom' ? `<div class="field cyl-field"><span class="lbl">Панорама точки</span>
           <span class="cap">Длинное фото по кругу на 360° (например, 2:1 с камеры 360° или склейка с телефона). Оно оборачивает цилиндр, посетитель стоит в центре и поворачивается в стороны.</span>
           ${o.pano ? `<img class="thumb wide" src="${esc(o.pano)}" alt=""><button class="btn blue full" data-act="viewCyl">${icon('eye')}Посмотреть панораму</button>` : ''}
           ${state.readonly ? '' : `<div class="row"><button class="btn sm${o.pano ? '' : ' primary'}" data-act="cylPano">${icon('upload')}${o.pano ? 'Заменить панораму' : 'Загрузить панораму'}</button>${o.pano ? '<button class="btn sm ghost" data-act="cylPanoRm">Убрать</button>' : ''}</div>`}</div>` : ''}
         <div class="field"><span class="lbl">Фото</span>${photoBlock(o.photo, 'photo', 'Добавить фото')}</div>
-        ${state.readonly ? '' : `<div class="row"><button class="btn sm" data-act="del">${icon('erase')}Удалить метку</button><button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
+        ${state.readonly ? '' : `<div class="row"><button class="btn sm danger" data-act="del">${icon('erase')}Удалить метку</button><button class="btn sm" data-act="show3d">${icon('cube')}В 3D</button></div>`}`;
     } else if (s.type === 'pano') {
       const nb = neighbors(map, o.id);
       h = `<div class="insp-head">${badge('pano')}<h2>${esc(o.name)}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
         ${field('Название точки', `<input class="inp" id="f-pname" value="${esc(o.name)}" ${dis()}>`)}
+        <div class="field"><span class="lbl">Адрес в ссылке · латиница, цифры, дефис</span><div class="row nowrap"><span class="cap mono nowrap">#/pano/</span><input class="inp mono" id="f-pslug" value="${esc(o.slug || '')}" placeholder="${esc(slugify(o.name))}" maxlength="64" ${dis()}>${state.readonly ? '' : '<button class="btn sm" data-act="slugFromName" title="Сделать адрес из названия">Из названия</button>'}</div>
+          <span class="cap" id="slugMsg">${o.slug ? 'Название можно менять — адрес и ссылки на точку останутся прежними.' : 'Пока ссылка ведёт по внутреннему номеру точки.'}</span></div>
         <button class="btn blue full" data-act="lookPano">${icon('eye')}Посмотреть панораму</button>
+        ${iconField(o, 'pano')}
         ${guideField(o)}
-        <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото.' : 'Сейчас вид строится из 3D-модели. Загрузите сферическое фото (формат 2:1) с камеры 360° или склейку с телефона.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
-        ${o.img && !state.readonly ? `<div class="field rot-field"><span class="lbl">Направление фото · ${Math.round(o.photoRot || 0)}°</span>
-          <span class="cap">Чтобы стрелки переходов указывали туда, где точка видна на фото: нажмите «Посмотреть панораму», повернитесь к месту на фото, где стоит соседняя точка, и нажмите её имя ниже.</span>
-          <div class="row"><button class="btn sm" data-act="rotPhoto" data-d="-5">↺ 5°</button><button class="btn sm" data-act="rotPhoto" data-d="5">↻ 5°</button><button class="btn sm" data-act="rotPhoto" data-d="90">↻ 90°</button></div>
-          ${nb.length ? `<div class="chips">${nb.map((q) => `<button class="opt" data-act="alignTo" data-id="${q.id}">Совместить «${esc(q.name)}»</button>`).join('')}</div>` : ''}</div>` : ''}
+        <div class="field"><span class="lbl">Фото 360°</span><span class="cap">${o.img ? 'Посетители видят это фото. Поворот, вид при открытии и стрелки — в «Посмотреть панораму».' : 'Сейчас вид строится из 3D-модели. Загрузите готовую сферическую панораму 2:1 (JPEG, PNG, WebP, от 2000 px по ширине, до 15 МБ) — с камеры 360° или из приложения-склейки. Обычные фото сайт в панораму не склеивает.'}</span>${photoBlock(o.img, 'pano360', 'Загрузить фото 360°')}</div>
         ${field('Панорама Google Maps или видео YouTube', `<textarea class="inp" id="f-pembed" placeholder="Код &lt;iframe&gt; из Google Maps (Поделиться → Встраивание карты) или ссылка на видео YouTube — обычное или 360°" ${dis()}>${esc(o.embed || '')}</textarea>`)}
         ${o.embed && !mapsEmbed(o.embed) ? '<p class="cap">Не похоже на код Google Maps или ссылку YouTube — посетители увидят обычную панораму.</p>' : ''}
         <p class="cap" style="margin:0">Берите только материалы, которые можно показывать: свои съёмки или ролики, где автор разрешил встраивание.</p>
-        <div class="grid2">${field('Уровень пола, м', num('f-pz', o.z || 0, 0.5, 0))}</div>
         <div class="field"><span class="lbl">Переходы · ${nb.length}</span><div class="list">${nb.map((q) => `<div class="item"><span class="glyph sm" style="background:var(--pano)"></span><span class="t"><b>${esc(q.name)}</b><span>${Math.round(Math.hypot(q.x - o.x, q.y - o.y))} м</span></span>${state.readonly ? '' : `<button class="iconbtn flat" data-act="unlink" data-id="${q.id}" aria-label="Убрать переход">${icon('close')}</button>`}</div>`).join('') || '<p class="cap">Нет переходов. Включите «Связь» и нажмите на две точки.</p>'}</div></div>
-        ${state.readonly ? '' : `<button class="btn sm" data-act="del">${icon('erase')}Удалить точку</button>`}`;
+        ${state.readonly ? '' : `<button class="btn sm danger" data-act="del">${icon('erase')}Удалить точку</button>`}`;
     } else if (s.type === 'sector') {
       const sec = sector(s.id), col = map.sectors[s.id]?.color || standColor(map, sec.stand);
       h = `<div class="insp-head"><span class="glyph" style="background:${col}">${sec.stand}</span><h2>Сектор ${sec.id}</h2><button class="iconbtn flat" data-act="desel" aria-label="Закрыть">${icon('close')}</button></div>
@@ -248,13 +264,47 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     const list = m === 'build'
       ? shapesHere.map((s) => `<button class="item" data-sel="shape:${s.id}"><span class="dot" style="background:${s.color || catColor(map, s.cat)};width:12px;height:12px"></span><span class="t"><b>${esc(s.name)}</b><span>${KINDS[s.kind]?.n || ''} · ${CATS[s.cat]?.n || ''} · ${Math.round(shapeArea(s))} м²</span></span></button>`).join('')
       : poisHere.map((p) => `<button class="item" data-sel="poi:${p.id}">${badge(p.cat, poiColor(map, p), PCATS[p.cat]?.g || 'i', 'sm')}<span class="t"><b>${esc(p.name)}</b><span>${esc(p.text || PCATS[p.cat]?.n || '')}</span></span></button>`).join('')
-        + `<h3 class="h-sec" style="margin:12px 0 4px">Точки обзора</h3>` + panosHere.map((p) => `<button class="item" data-sel="pano:${p.id}">${badge('pano', '', '', 'sm')}<span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}</span></span></button>`).join('');
+        + panoLists(panosHere);
     return `<div class="insp">
       <div><h2 style="font-size:16px">${m === 'build' ? 'Построение помещений' : 'Ключевые точки и панорамы'}</h2>
-      <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Сначала нарисуйте помещения инструментами слева: прямоугольник, контур, овал, стены, двери и лестницы. Потом перейдите во вкладку «Точки и панорамы».' : 'Ставьте метки (входы, кафе, туалеты), точки обзора 360° и связывайте их — по связям посетители ходят в панорамах и строят маршруты.'}</p></div>
+      <p class="cap" style="margin:4px 0 0">${state.readonly ? 'У вас роль «Наблюдатель»: можно смотреть черновик и историю версий.' : m === 'build' ? 'Рисуйте помещения инструментами слева, затем переходите к точкам и панорамам.' : 'Метки, точки обзора 360° и переходы между ними — по переходам строятся маршруты.'}</p></div>
       ${pasteCard()}
       ${m === 'build' ? underlayBlock() : ''}
       <h3 class="h-sec">${m === 'build' ? `Объекты · ${shapesHere.length}` : `Метки · ${poisHere.length}`}${fname}</h3><div class="list">${list}</div></div>`;
+  }
+
+  function panoLists(list) {
+    const WEEK = 7 * 864e5, now = Date.now(), at = (p) => p.created || 0;
+    const sorted = [...list].sort((a, b) => at(b) - at(a) || map.panos.indexOf(b) - map.panos.indexOf(a));
+    const fresh = sorted.filter((p) => now - at(p) < WEEK), old = sorted.filter((p) => now - at(p) >= WEEK);
+    const row = (p) => `<button class="item" data-sel="pano:${p.id}">${badge('pano', '', '', 'sm', pointIconUrl(p, 'pano'))}<span class="t"><b>${esc(p.name)}</b><span>${p.img ? 'фото 360°' : 'вид из 3D'} · переходов: ${neighbors(map, p.id).length}${p.created ? ' · ' + fmtDate(new Date(p.created).toISOString()) : ''}</span></span></button>`;
+    const col = (title, l) => `<div class="pano-col"><h3 class="h-sec">${title} · ${l.length}</h3><div class="list">${l.map(row).join('') || '<p class="cap">Пока нет</p>'}</div></div>`;
+    return `<div class="pano-cols">${fresh.length ? col('Новые точки обзора', fresh) + col('Добавлены раньше', old) : col('Точки обзора', old)}</div>`;
+  }
+
+  // ---------- проверка карты: что сломано или забыто ----------
+  function mapIssues() {
+    const out = [], ids = new Set(map.panos.map((p) => p.id)), seen = new Set();
+    const site = map.shapes.find((s) => s.cat === 'plaza'), sb = site && shapeBox(site);
+    const off = (o) => sb && (o.x < sb.x - 0.01 || o.y < sb.y - 0.01 || o.x > sb.x + sb.w + 0.01 || o.y > sb.y + sb.h + 0.01);
+    for (const l of map.links) {
+      const k = [...l].sort().join('|');
+      if (!ids.has(l[0]) || !ids.has(l[1])) out.push({ bad: true, t: 'Переход ведёт на удалённую точку обзора', fix: 'brokenLinks' });
+      else if (seen.has(k)) out.push({ bad: false, t: 'Один и тот же переход записан дважды', fix: 'brokenLinks' });
+      seen.add(k);
+    }
+    if (map.panos.length > 1) for (const p of map.panos) if (!neighbors(map, p.id).length) out.push({ bad: true, t: `«${p.name}» ни с чем не связана — в неё нельзя перейти из других панорам`, sel: 'pano:' + p.id });
+    const near = (list, type, n) => list.forEach((a, i) => list.slice(i + 1).forEach((b) => {
+      if (floorOf(a) === floorOf(b) && Math.hypot(a.x - b.x, a.y - b.y) < 0.6) out.push({ bad: false, t: `Две ${n} почти в одном месте: «${a.name}» и «${b.name}»`, sel: `${type}:${b.id}` });
+    }));
+    near(map.panos, 'pano', 'точки обзора'); near(map.pois, 'poi', 'метки');
+    const names = {};
+    for (const p of map.panos) (names[p.name] ||= []).push(p);
+    for (const [n, l] of Object.entries(names)) if (l.length > 1) out.push({ bad: false, t: `${l.length} точки обзора с одинаковым названием «${n}» — посетитель их спутает`, sel: 'pano:' + l[1].id });
+    for (const o of [...map.pois, ...map.panos]) if (off(o)) out.push({ bad: true, t: `«${o.name}» стоит за границей участка`, sel: (map.pois.includes(o) ? 'poi:' : 'pano:') + o.id });
+    for (const p of map.pois) if (!p.name?.trim() || p.name === 'Новая метка') out.push({ bad: false, t: 'Метка без названия', sel: 'poi:' + p.id });
+    for (const p of map.panos) if (p.embed && !mapsEmbed(p.embed)) out.push({ bad: false, t: `«${p.name}»: ссылка на панораму не распознана`, sel: 'pano:' + p.id });
+    return out;
   }
 
   function underlayBlock() {
@@ -271,7 +321,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   let tm = null;
   function testMascot(refreshOnly) {
     if (refreshOnly) { tm?.setSettings(mascotSettings(map)); return tm; }
-    if (!tm) { tm = createMascot(root, mascotSettings(map)); window.__ac?.signal.addEventListener('abort', () => tm.destroy()); }
+    if (!tm) { tm = createMascot(root, mascotSettings(map), { sound: () => true }); window.__ac?.signal.addEventListener('abort', () => tm.destroy()); }
     else tm.setSettings(mascotSettings(map));
     return tm;
   }
@@ -312,6 +362,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     // копия ложится на текущий этаж — так объект накладывается на другой этаж, а не проваливается в него
     if (state.floor === groundId()) delete n.floor; else n.floor = state.floor;
     if (n.name && c.type !== 'door') n.name = n.name.replace(/ \(копия( \d+)?\)$/, '') + ' (копия)';
+    if (c.type === 'pano') { n.slug = uniqueSlug(map, slugify(n.name), n.id); n.created = Date.now(); delete n.arrows; }
     pasteN++;
     const dx = at ? snap(at.x - mid.x) : 3 * pasteN, dy = at ? snap(at.y - mid.y) : 3 * pasteN;
     shift(c.type, n, dx, dy);
@@ -376,10 +427,11 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
 
   function panel(name) {
     state.panel = name;
-    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты', floors: 'Этажи', visitors: 'Слои для посетителей', mascot: 'Маскот' }[name]}</h2></div>`;
+    let h = `<div class="row nowrap"><button class="iconbtn flat" data-act="${name === 'menu' ? 'closePanel' : 'panel'}" data-p="menu" aria-label="Назад">${icon('back')}</button><h2 style="font-size:17px">${{ menu: 'Меню', publish: 'Публикация', versions: 'История версий', colors: 'Цвета карты', floors: 'Этажи', visitors: 'Слои для посетителей', mascot: 'Маскот', check: 'Проверка карты' }[name]}</h2></div>`;
     if (name === 'menu') {
       const items = [
         isAdmin && ['publish', 'publish', 'Публикация', 'Выпустить черновик для посетителей'],
+        ['check', 'check', 'Проверка карты', (() => { const n = mapIssues().length; return n ? `Найдено замечаний: ${n}` : 'Замечаний нет'; })()],
         ['versions', 'history', 'История версий', isAdmin ? 'Посмотреть и откатить' : 'Посмотреть'],
         ['mascot', 'chat', 'Маскот', 'Размер, громкость, фразы приветствия'],
         ['floors', 'layers', 'Этажи', `${map.floors.length} · добавить, переименовать, задать высоту`],
@@ -395,7 +447,8 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         ${links.map(([href, ic, n, sub]) => `<a class="item" href="${href}">${icon(ic)}<span class="t"><b>${n}</b><span>${sub}</span></span>${icon('chevron', 'chev')}</a>`).join('')}
         <button class="item" data-act="exportJson">${icon('save')}<span class="t"><b>Скачать карту (JSON)</b><span>Резервная копия или новый шаблон для репозитория</span></span></button>
         ${isEditor ? `<button class="item" data-act="importJson">${icon('upload')}<span class="t"><b>Загрузить карту из JSON</b><span>Заменит черновик, можно отменить</span></span></button>` : ''}
-        <a class="item" href="index.html?object=${encodeURIComponent(venue.slug)}" target="_blank" rel="noopener">${icon('eye')}<span class="t"><b>Открыть карту как посетитель</b><span>Опубликованная версия, в новой вкладке</span></span></a>
+        <a class="item" href="index.html?object=${encodeURIComponent(venue.slug)}&preview=1" target="_blank" rel="noopener">${icon('eye')}<span class="t"><b>Черновик глазами посетителя</b><span>Без публикации, в новой вкладке</span></span></a>
+        <a class="item" href="index.html?object=${encodeURIComponent(venue.slug)}" target="_blank" rel="noopener">${icon('map')}<span class="t"><b>Опубликованная карта</b><span>То, что посетители видят сейчас</span></span></a>
         ${state.conflict ? `<button class="item" data-act="reload">${icon('history')}<span class="t"><b>Загрузить свежий черновик</b><span>Ваши несохранённые правки пропадут</span></span></button>` : ''}</div>
         ${api.demo ? '<p class="demo-note"><b>Демо без сервера.</b> Черновик, версии и пользователи хранятся в этом браузере. Запустите бэкенд, чтобы работать командой.</p>' : ''}`;
     }
@@ -403,8 +456,15 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
       h += `<div class="card"><span class="status-pill ${state.dirty ? 'warn' : 'ok'}">${state.dirty ? 'Есть несохранённые изменения' : 'Черновик сохранён'}</span>
         <p class="cap" style="margin:0">После публикации посетители сразу увидят этот черновик по обычной ссылке на карту. Прошлая версия останется в истории.</p>
         ${field('Что изменилось', '<input class="inp" id="f-comment" placeholder="Например: добавили фудкорты на галерее">')}
+        ${(() => { const n = mapIssues().filter((x) => x.bad).length; return n ? `<button class="item issue bad" data-act="panel" data-p="check"><span class="ck">!</span><span class="t"><b>Перед публикацией: ${n} ${n === 1 ? 'проблема' : 'проблем'} на карте</b><span>Посмотреть</span></span></button>` : ''; })()}
         <button class="btn primary full" data-act="publishNow">${icon('publish')}Опубликовать</button></div>
         <dl class="kv"><dt>Объектов</dt><dd>${map.shapes.length}</dd><dt>Меток</dt><dd>${map.pois.length}</dd><dt>Точек обзора</dt><dd>${map.panos.length} (с фото: ${map.panos.filter((p) => p.img).length})</dd><dt>Переходов</dt><dd>${map.links.length}</dd></dl>`;
+    }
+    if (name === 'check') {
+      const list = mapIssues();
+      h += list.length ? `<p class="cap" style="margin:0">Нажмите на замечание, чтобы перейти к объекту.</p><div class="list">${list.map((x) => `<${x.sel ? `button data-sel="${x.sel}"` : 'div'} class="item issue ${x.bad ? 'bad' : ''}"><span class="ck">!</span><span class="t"><b>${esc(x.t)}</b></span></${x.sel ? 'button' : 'div'}>`).join('')}</div>
+        ${list.some((x) => x.fix === 'brokenLinks') && !state.readonly ? '<button class="btn sm dark" data-act="fixLinks">Убрать битые и повторные переходы</button>' : ''}`
+        : '<div class="card"><b>Всё в порядке</b><p class="cap" style="margin:0">Битых переходов, точек без связей и дублей не нашлось.</p></div>';
     }
     if (name === 'versions') { h += '<div class="list" id="vers"><p class="cap">Загружаю…</p></div>'; loadVersions(); }
     if (name === 'colors') {
@@ -474,6 +534,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (v === '3d' && !scene) {
       const { Scene3D } = await import('../core/scene3d.js');
       scene = new Scene3D(three, { onPick: pick3d });
+      scene.questAlways = true;   // в конструкторе пиксели охоты видны и в обычном 3D
       scene.setHidden(state.hidden);
       window.addEventListener('themechange', () => scene.setMap(map), { signal: window.__ac?.signal });
       if (map.floors.length > 1) scene.topFloor = state.floor;
@@ -482,12 +543,19 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     $('.zoombox', root).hidden = v !== '2d'; $('#tb').style.visibility = v === '3d' ? 'hidden' : '';
     if (scene) { scene.setActive(v === '3d'); if (v === '3d') { scene.setMap(map); if (!scene._init) { scene.overview(true); scene._init = true; } } }
     $('[data-act="view3d"]', root).style.color = v === '3d' ? 'var(--pano)' : '';
-    if (v === '2d') { $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); plan.render(); }
+    if (v === '2d') { $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); closeTune(); plan.render(); }
     optbar();
   }
   function pick3d(hit) {
     if (scene.look) {
-      if (hit.type === 'arrow') { const q = map.panos.find((p) => p.id === hit.id); scene.setArrows([]); scene.glideTo(q.x, q.y, elevOf(map, q) + (q.z || 0) + 1.6, () => { const nb = neighbors(map, q.id); scene.setArrows(nb); scene.preload(nb.map((n) => n.img)); state.sel = { type: 'pano', id: q.id }; inspector(); }, { url: q.img, rot: q.photoRot }); }
+      if (hit.type === 'arrow') {
+        const q = map.panos.find((p) => p.id === hit.id); if (!q || scene.gliding) return;
+        leaveTune().then((ok) => {
+          if (!ok) return;
+          scene.setArrows([]);
+          scene.glideTo(q.x, q.y, elevOf(map, q) + (q.z || 0) + 1.6, () => { const nb = neighbors(map, q.id); scene.setArrows(arrowItems(q, nb)); scene.preload(nb.map((n) => n.img)); state.sel = { type: 'pano', id: q.id }; inspector(); openTune(q); }, { url: q.img, rot: q.photoRot });
+        });
+      }
       return;
     }
     if (hit.type !== 'ref') return;
@@ -505,13 +573,84 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   async function lookPano() {
     const p = ed.find(state.sel); await setView('3d');
     const nb = neighbors(map, p.id);
-    scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, faceOf(p, nb)); scene.setPhoto(p.img || null, p.photoRot); scene.setArrows(nb); scene.preload(nb.map((n) => n.img));
-    $('.look-exit', root).hidden = false;
+    scene.enterLook(p.x, p.y, elevOf(map, p) + (p.z || 0) + 1.6, faceOf(p, nb), startView(p) || {}); scene.setPhoto(p.img || null, p.photoRot); scene.setArrows(arrowItems(p, nb)); scene.preload(nb.map((n) => n.img));
+    $('.look-exit', root).hidden = false; openTune(p);
     // панорама Google или видео YouTube — как у посетителя, поверх 3D
     const src = mapsEmbed(p.embed);
     if (src) { const box = Object.assign(document.createElement('div'), { className: 'pano-embed' }); box.innerHTML = `<iframe src="${esc(src)}" title="${esc(p.name)}" allow="accelerometer; gyroscope; encrypted-media; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`; $('.canvas', root).append(box); }
   }
-  function exitLook() { if (!scene) return; scene.exitLook(); $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); }
+  async function exitLook() {
+    if (!scene) return;
+    if (!(await leaveTune())) return;
+    scene.exitLook(); $('.look-exit', root).hidden = true; root.querySelector('.canvas .pano-embed')?.remove(); closeTune();
+  }
+
+  // ---------- настройка панорамы: поворот фото, вид при открытии, стрелки по фото ----------
+  // Правки сначала видны только здесь; в карту попадают по «Сохранить» (одним шагом отмены), «Отменить» — вернуть как было.
+  let tune = null;
+  const RADD = 180 / Math.PI, norm = (d) => +((((d % 360) + 360) % 360).toFixed(1));
+  const tunePick = (p) => clone({ photoRot: p.photoRot || 0, view: p.view || null, arrows: p.arrows || {} });
+  const tuneDirty = () => tune && JSON.stringify(tune.cur) !== JSON.stringify(tune.orig);
+  const tunePano = () => tune && map.panos.find((x) => x.id === tune.id);
+  function openTune(p) {
+    if (state.readonly) return;
+    tune = { id: p.id, orig: tunePick(p), cur: tunePick(p) };
+    scene.onLook = () => { const el = $('#tuneAt', root); if (el && scene.look) el.textContent = `взгляд ${norm(scene.look.yaw * RADD)}° · наклон ${Math.round(scene.look.pitch * RADD)}°`; };
+    renderTune();
+  }
+  function closeTune() { tune = null; const el = $('#tune', root); el.hidden = true; el.innerHTML = ''; if (scene) scene.onLook = null; }
+  async function leaveTune() {
+    if (!tuneDirty()) return true;
+    const ok = await confirmBox('Настройки панорамы не сохранены. Выйти без сохранения?', { ok: 'Выйти без сохранения', cancel: 'Остаться' });
+    if (ok) { tune.cur = clone(tune.orig); applyTune(); }
+    return ok;
+  }
+  function applyTune() {
+    const p = tunePano(); if (!p || !scene?.look) return;
+    const v = { ...p, ...tune.cur };
+    scene.setPhotoRot(v.photoRot); scene.setArrows(arrowItems(v, neighbors(map, p.id)));
+    renderTune();
+  }
+  function renderTune() {
+    const p = tunePano(), el = $('#tune', root); if (!p || !el) return;
+    const c = tune.cur, nb = neighbors(map, p.id), photo = !!p.img;
+    el.hidden = false;
+    el.innerHTML = `<div class="row nowrap" style="justify-content:space-between"><b>Настройка панорамы</b><span class="cap mono" id="tuneAt"></span></div>
+      ${photo ? `<div class="tune-row"><span class="cap">Поворот фото · <b class="mono">${norm(c.photoRot)}°</b></span><div class="row nowrap"><button class="btn sm" data-act="tuneRot" data-d="-5">↺ 5°</button><button class="btn sm" data-act="tuneRot" data-d="-1">↺ 1°</button><button class="btn sm" data-act="tuneRot" data-d="1">↻ 1°</button><button class="btn sm" data-act="tuneRot" data-d="5">↻ 5°</button><button class="btn sm" data-act="tuneRot" data-d="90">↻ 90°</button></div></div>` : '<p class="cap" style="margin:0">Вид из 3D-модели: фото нет, поворачивать нечего.</p>'}
+      <div class="tune-row"><span class="cap">Вид при открытии · ${c.view ? `<b class="mono">${norm(c.view.u)}°, наклон ${Math.round(c.view.pitch)}°</b>` : 'по направлению на соседнюю точку'}</span><div class="row nowrap"><button class="btn sm" data-act="tuneView">Запомнить текущий вид</button>${c.view ? '<button class="btn sm ghost" data-act="tuneViewRm">Сбросить</button>' : ''}</div></div>
+      ${photo && nb.length ? `<div class="tune-row"><span class="cap">Стрелки переходов: повернитесь туда, где на фото видна соседняя точка, и нажмите «Сюда» — стрелка встанет в центр экрана. «Совместить» поворачивает всё фото так, чтобы стрелка по плану совпала с этим местом.</span>
+        <div class="tune-arrows">${nb.map((q) => `<div class="row nowrap"><span class="t2"><b>${esc(q.name)}</b><span>${Number.isFinite(c.arrows[q.id]) ? `вручную · ${norm(c.arrows[q.id])}°` : 'по плану'}</span></span>
+          <button class="btn sm" data-act="tuneArrow" data-id="${q.id}">Сюда</button><button class="btn sm ghost" data-act="tuneAlign" data-id="${q.id}">Совместить</button>${Number.isFinite(c.arrows[q.id]) ? `<button class="iconbtn flat" data-act="tuneArrowRm" data-id="${q.id}" aria-label="Стрелка по плану">${icon('close')}</button>` : ''}</div>`).join('')}</div></div>` : ''}
+      <div class="row"><button class="btn sm primary" data-act="tuneSave" ${tuneDirty() ? '' : 'disabled'}>${icon('check')}Сохранить</button><button class="btn sm" data-act="tuneCancel" ${tuneDirty() ? '' : 'disabled'}>Отменить изменения</button><button class="btn sm ghost danger" data-act="tuneReset">Сбросить всё</button></div>`;
+    scene?.onLook?.();
+  }
+  function tuneAct(a, t) {
+    const c = tune.cur, L = scene.look, phi = (c.photoRot || 0) / RADD;
+    if (a === 'tuneRot') c.photoRot = norm(c.photoRot + +t.dataset.d);
+    if (a === 'tuneView') c.view = { u: norm((L.yaw + phi) * RADD), pitch: Math.round(L.pitch * RADD), fov: Math.round(L.fov) };
+    if (a === 'tuneViewRm') c.view = null;
+    if (a === 'tuneArrow') c.arrows = { ...c.arrows, [t.dataset.id]: norm((L.yaw + phi) * RADD) };
+    if (a === 'tuneArrowRm') { c.arrows = { ...c.arrows }; delete c.arrows[t.dataset.id]; }
+    if (a === 'tuneAlign') {
+      // то, что сейчас в центре экрана, ставим точно по направлению на соседнюю точку
+      const p = tunePano(), q = map.panos.find((x) => x.id === t.dataset.id), psi = Math.atan2(q.y - p.y, q.x - p.x);
+      c.photoRot = norm((L.yaw + phi - psi) * RADD); c.arrows = { ...c.arrows }; delete c.arrows[q.id];
+      L.yaw = psi; scene.applyLook();
+    }
+    if (a === 'tuneReset') { c.photoRot = 0; c.view = null; c.arrows = {}; }
+    if (a === 'tuneCancel') tune.cur = clone(tune.orig);
+    if (a === 'tuneSave') {
+      const p = tunePano(), v = clone(tune.cur);
+      ed.change(() => {
+        if (v.photoRot) p.photoRot = v.photoRot; else delete p.photoRot;
+        if (v.view) p.view = v.view; else delete p.view;
+        const ar = Object.fromEntries(Object.entries(v.arrows).filter(([id]) => map.panos.some((x) => x.id === id)));
+        if (Object.keys(ar).length) p.arrows = ar; else delete p.arrows;
+      }, 'Настройки панорамы сохранены');
+      tune.orig = clone(v);
+    }
+    applyTune();
+  }
 
   // ---------- события ----------
   const keyMap = {};
@@ -527,6 +666,21 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   function upload(onUrl) {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/jpeg,image/png,image/webp';
     inp.onchange = async () => { const f = inp.files[0]; if (!f) return; try { toast('Загружаю фото…'); const r = await api.upload(f); ed.change(() => onUrl(r.url), 'Фото добавлено'); } catch (e) { toast(e.message, 4000); } };
+    inp.click();
+  }
+
+  function uploadPano360(o) {
+    const inp = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      try {
+        const { w, h } = await checkPanoFile(f);
+        if (!(await previewPano(f, { title: o.img ? `Новое фото для «${o.name}»` : `Фото 360° для «${o.name}»`, info: `${w} × ${h} · ${(f.size / 1048576).toFixed(1)} МБ · ведите, чтобы осмотреться` }))) return;
+        toast('Загружаю фото…', 8000);
+        const r = await api.upload(f, 'pano360'), had = !!o.img;
+        ed.change(() => { o.img = r.url; }, had ? 'Фото заменено — поворот, вид и стрелки сохранены' : 'Фото 360° добавлено');
+      } catch (e) { toast(e.message, 6000); }
+    };
     inp.click();
   }
 
@@ -554,6 +708,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'panel') panel(t.dataset.p);
     if (a === 'closePanel') { state.panel = null; inspector(); }
     if (a === 'exitLook') exitLook();
+    if (a.startsWith('tune') && tune && scene?.look && !state.readonly) return tuneAct(a, t);
     if (a === 'viewCyl' && o?.pano) { const { openCylPano } = await import('../core/cylpano.js'); openCylPano({ url: o.pano, title: o.name }); return; }
     if (state.readonly && !['panel', 'closePanel', 'reload', 'show3d', 'lookPano', 'desel'].includes(a)) return;
     if (a === 'kind') ed.change(() => { o.kind = t.dataset.v; if (KINDS[o.kind].walls && !o.height) o.height = KINDS[o.kind].height; });
@@ -566,26 +721,26 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     if (a === 'secColorReset') ed.change(() => { delete map.sectors[s.id].color; plan.stadCache.key = null; });
     if (a === 'dup') duplicate();
     if (a === 'paste') paste(null);
-    if (a === 'del') { const list = { shape: 'shapes', wall: 'walls', door: 'doors', stairs: 'stairs', poi: 'pois', pano: 'panos' }[s.type]; ed.change(() => { map[list] = map[list].filter((x) => x.id !== s.id); if (s.type === 'pano') map.links = map.links.filter((l) => !l.includes(s.id)); }, 'Удалено'); ed.select(null); }
+    if (a === 'del') { if (!o || !LISTS[s.type] || o.cat === 'plaza' || !(await ed.confirmDelete(s, o))) return; const list = LISTS[s.type]; ed.change(() => { map[list] = map[list].filter((x) => x.id !== s.id); if (s.type === 'pano') map.links = map.links.filter((l) => !l.includes(s.id)); }, 'Удалено'); ed.select(null); }
     if (a === 'unlink') ed.change(() => { map.links = map.links.filter((l) => !(l.includes(s.id) && l.includes(t.dataset.id))); }, 'Переход убран');
     if (a === 'photo') upload((url) => (o.photo = url));
+    if (a === 'slugFromName' && o) ed.change(() => { o.slug = uniqueSlug(map, slugify(o.name), o.id); }, 'Адрес обновлён');
+    if (a === 'setIcon' && o) ed.change(() => { delete o.iconUrl; if (t.dataset.v === (s.type === 'pano' ? 'pano' : o.cat)) delete o.icon; else o.icon = t.dataset.v; }, 'Значок изменён');
+    if (a === 'iconUp' && o) upload((url) => { o.iconUrl = url; delete o.icon; });
+    if (a === 'iconReset' && o) ed.change(() => { delete o.icon; delete o.iconUrl; }, 'Значок — как у типа');
+    if (a === 'fixLinks') {
+      const ids = new Set(map.panos.map((p) => p.id)), seen = new Set();
+      ed.change(() => { map.links = map.links.filter((l) => { const k = [...l].sort().join('|'); if (!ids.has(l[0]) || !ids.has(l[1]) || l[0] === l[1] || seen.has(k)) return false; seen.add(k); return true; }); }, 'Переходы исправлены');
+      panel('check');
+    }
     if (a === 'photoRm') ed.change(() => delete o.photo);
     if (a === 'mascotTest') { testMascot().greet(); return; }
     if (a === 'mascotGuide' && o) { testMascot().guide(o.guide); return; }
     if (a === 'mascotReset') { ed.change(() => { map.mascot = { ...(map.mascot || {}), phrases: [...DEFAULT_PHRASES] }; }, 'Стандартные фразы возвращены'); testMascot(true); panel('mascot'); return; }
-    if (a === 'rotPhoto') { ed.change(() => { o.photoRot = (((o.photoRot || 0) + +t.dataset.d) % 360 + 360) % 360; }); scene?.setPhotoRot(o.photoRot); }
-    if (a === 'alignTo') {
-      // сейчас в центре экрана то место фото, где видна соседняя точка: поворачиваем фото так, чтобы оно оказалось ровно по направлению на неё
-      const q = map.panos.find((x) => x.id === t.dataset.id);
-      if (!scene?.look || !scene.sphere) return toast('Сначала «Посмотреть панораму» и повернитесь к месту на фото, где видна эта точка', 4500);
-      const psiN = Math.atan2(q.y - o.y, q.x - o.x), phi = ((o.photoRot || 0) * Math.PI) / 180, deg = ((((scene.look.yaw + phi - psiN) * 180) / Math.PI) % 360 + 360) % 360;
-      ed.change(() => { o.photoRot = +deg.toFixed(1); }, `Фото повёрнуто: стрелка «${q.name}» совпадает с фото`);
-      scene.setPhotoRot(o.photoRot); scene.look.yaw = psiN; scene.applyLook();
-    }
     if (a === 'cylPano') upload((url) => (o.pano = url));
     if (a === 'cylPanoRm') ed.change(() => delete o.pano);
-    if (a === 'pano360') upload((url) => (o.img = url));
-    if (a === 'pano360Rm') ed.change(() => delete o.img);
+    if (a === 'pano360') uploadPano360(o);
+    if (a === 'pano360Rm') { if (await confirmBox(`Убрать фото 360° у «${o.name}»? Вид снова будет строиться из 3D-модели.`, { ok: 'Убрать фото' })) ed.change(() => delete o.img, 'Фото убрано'); }
     if (a === 'addFloor') {
       const fs = floorsSorted(map), top = fs.at(-1), nf = { id: uid('f'), name: `${fs.length + 1} этаж`, elev: +((top.elev || 0) + 4).toFixed(2) };
       ed.change(() => { map.floors = [...map.floors, nf]; }, `Добавлен ${nf.name} на отметке ${nf.elev} м`);
@@ -645,6 +800,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   root.addEventListener('input', (e) => {
     const t = e.target, o = ed.find(state.sel);
     if (t.id === 'f-under') { state.underOp = +t.value; redraw(); return; }
+    if (t.id === 'o-nw' || t.id === 'o-nh') { const n = +t.value; if (n >= 0.5 && n <= 2000) state[t.id === 'o-nw' ? 'newW' : 'newH'] = n; return; }
     if (['f-mascot-size', 'f-mascot-vol', 'f-mascot-phrases'].includes(t.id) && !state.readonly) {
       if (!snapped) { ed.snapshot(); snapped = true; }
       map.mascot = { ...(map.mascot || {}) };
@@ -683,13 +839,21 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     const map1 = { 'f-name': ['name'], 'f-desc': ['desc'], 'f-mname': ['name'], 'f-mtext': ['text'], 'f-pname': ['name'], 'f-guide': ['guide'] };
     if (map1[t.id]) { o[map1[t.id][0]] = v; const h2 = $('.insp-head h2', root); if (h2 && /name/.test(t.id)) h2.textContent = v; }
     if (t.id === 'f-stext') map.sectors[state.sel.id] = { ...map.sectors[state.sel.id], text: v };
+    if (t.id === 'f-pslug') {
+      const v2 = v.trim().toLowerCase(), msg = $('#slugMsg');
+      if (!v2) { delete o.slug; msg.textContent = 'Ссылка будет вести по внутреннему номеру точки.'; }
+      else if (!SLUG_RE.test(v2)) { msg.textContent = 'Только латиница, цифры и дефис, начинается с буквы или цифры'; return; }
+      else if (map.panos.some((x) => x.id !== o.id && x.slug === v2)) { msg.textContent = 'Такой адрес уже у другой точки'; return; }
+      else { o.slug = v2; msg.textContent = 'Адрес сохранится автоматически. Старые ссылки с прежним адресом перестанут работать.'; }
+    }
     if (t.id === 'f-pembed') { if (v.trim()) o.embed = mapsEmbed(v) || v.trim(); else delete o.embed; }
     if (ok) {
-      const nums = { 'f-w': 'w', 'f-h': 'h', 'f-x': 'x', 'f-y': 'y', 'f-height': 'height', 'f-thick': 'thick', 'f-wh': 'height', 'f-dw': 'w', 'f-rise': 'rise', 'f-mx': 'x', 'f-my': 'y', 'f-mz': 'z', 'f-pz': 'z' };
+      const nums = { 'f-w': 'w', 'f-h': 'h', 'f-x': 'x', 'f-y': 'y', 'f-height': 'height', 'f-thick': 'thick', 'f-wh': 'height', 'f-dw': 'w', 'f-rise': 'rise', 'f-mx': 'x', 'f-my': 'y' };
       if (nums[t.id]) o[nums[t.id]] = ['w', 'h', 'height', 'thick', 'rise'].includes(nums[t.id]) ? Math.max(0.05, n) : n;
       if (t.id === 'f-rx2') o.rx = Math.max(0.5, n / 2);
       if (t.id === 'f-ry2') o.ry = Math.max(0.5, n / 2);
     }
+    if (o?.cat === 'plaza' && o.type === 'rect') map.bounds = { w: +o.w.toFixed(2), h: +o.h.toFixed(2) };
     markDirty(); redraw(); rebuildLater();
   });
   root.addEventListener('change', async (e) => {
