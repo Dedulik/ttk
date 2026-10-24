@@ -53,9 +53,10 @@ export class Plan2D {
     svg.addEventListener('pointermove', (e) => {
       const w = this.toWorld(e.clientX, e.clientY);
       this.h.hover?.(w);
-      // название метки или точки обзора — подсказкой у курсора
-      const el = !this.pointers.size && e.pointerType !== 'touch' && e.target.closest?.('[data-kind="poi"],[data-kind="pano"]');
-      const it = el && (el.dataset.kind === 'poi' ? this.map.pois : this.map.panos).find((x) => x.id === el.dataset.id);
+      // названия меток, точек обзора и зон — подсказкой у курсора (на плане их не пишем, чтобы не загромождать)
+      const el = !this.pointers.size && e.pointerType !== 'touch' && e.target.closest?.('[data-kind="poi"],[data-kind="pano"],[data-kind="shape"],[data-kind="wall"]');
+      const list = el && { poi: this.map.pois, pano: this.map.panos, shape: this.map.shapes, wall: this.map.shapes }[el.dataset.kind];
+      const it = list?.find((x) => x.id === el.dataset.id && x.cat !== 'plaza');
       if (it?.name) showTip(it.name, e.clientX, e.clientY); else hideTip();
       if (!this.pointers.has(e.pointerId)) return;
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -147,12 +148,10 @@ export class Plan2D {
       if (px < 0.4 && on('labels')) for (const sec of SECTORS) { const [x, y] = secMid(sec).xy; h += `<text x="${x}" y="${y}" font-size="${Math.min(2.6, 10 * px)}" class="t-sec">${sec.id}</text>`; }
       if (on('labels')) for (const k of ['A', 'B', 'C', 'D']) { const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 92); h += `<text x="${x}" y="${y}" font-size="${fs(11)}" class="t-stand" fill="${standColor(m, k)}">${STANDS[k].short} · ${k}</text>`; }
     }
-    // подписи объектов — только если помещаются
-    for (const s of on('labels') ? shapes : []) {
-      if (s.cat === 'plaza' || !s.name) continue;
-      const b = shapeBox(s), size = 11, wpx = b.w / px, need = s.name.length * size * 0.56;
-      if (wpx < need + 6 || b.h / px < size + 4) continue;
-      h += `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2}" font-size="${fs(size)}" class="t-shape${kindOf(s).walls ? ' b' : ''}">${esc(s.name)}</text>`;
+    // подпись зоны — только у выбранной; остальные названия всплывают при наведении
+    for (const s of on('labels') ? shapes.filter((x) => x.id === o.sel && x.name && x.cat !== 'plaza') : []) {
+      const b = shapeBox(s);
+      h += `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2}" font-size="${fs(11)}" class="t-shape${kindOf(s).walls ? ' b' : ''}" style="pointer-events:none">${esc(s.name)}</text>`;
     }
     if (o.route) {
       // на многоэтажном объекте сплошной — участок текущего этажа, пунктир — другие этажи

@@ -45,7 +45,7 @@ def main():
           f'--alias:three/addons={FRONT / "vendor" / "three" / "addons"} --outfile={js}'
     subprocess.run(cmd, shell=True, check=True)
     css = (FRONT / "src" / "styles.css").read_text(encoding="utf-8")
-    template = (FRONT / "data" / "template_map.json").read_text(encoding="utf-8")
+    template = (FRONT / "data" / "manezh_dgtu_map.json").read_text(encoding="utf-8")
     boot = (
         "<script>window.__FORCE_DEMO__=true;"
         f"window.__TEMPLATE__={json.dumps(json.loads(template))};"

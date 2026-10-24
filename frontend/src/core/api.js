@@ -2,7 +2,8 @@
 // те же методы и роли, но данные живут в localStorage этого браузера.
 import { clone, normalize } from './model.js';
 
-export const DEFAULT_SLUG = 'rostov-arena';
+// главный объект: index.html без ?object= открывает Манеж ДГТУ
+export const DEFAULT_SLUG = 'manezh-dgtu';
 const TOKEN_KEY = 'arena.token';
 /** Объект для экрана посетителя: index.html?object=<адрес>. */
 export const urlSlug = () => new URLSearchParams(location.search).get('object') || DEFAULT_SLUG;
@@ -17,7 +18,7 @@ export class ApiError extends Error {
 
 export async function loadTemplate() {
   if (window.__TEMPLATE__) return clone(window.__TEMPLATE__);
-  const r = await fetch(new URL('../../data/template_map.json', import.meta.url));
+  const r = await fetch(new URL('../../data/manezh_dgtu_map.json', import.meta.url));
   return r.json();
 }
 
@@ -118,7 +119,7 @@ class DemoApi {
   use() { return this; }
   async venues() {
     const d = store.get('draft'), v = store.get('versions', [])[0];
-    return [{ slug: DEFAULT_SLUG, name: 'Ростов Арена', description: 'Демо в браузере', published: v?.number, published_at: v?.published_at, revision: d?.revision, updated_at: d?.updated_at, updated_by: d?.updated_by }];
+    return [{ slug: DEFAULT_SLUG, name: 'Манеж ДГТУ', description: 'Демо в браузере', published: v?.number, published_at: v?.published_at, revision: d?.revision, updated_at: d?.updated_at, updated_by: d?.updated_by }];
   }
   async lock() { return { mine: true }; }
   unlock() {}
@@ -139,10 +140,12 @@ class DemoApi {
     store.set('users', us); return pub(u);
   }
   async init() {
+    // раньше демо открывало «Ростов Арену» — переходим на Манеж ДГТУ один раз
+    if (store.get('main') !== DEFAULT_SLUG) { store.set('draft', null); store.set('versions', null); store.set('main', DEFAULT_SLUG); }
     if (!store.get('draft')) {
       const t = await loadTemplate();
       store.set('draft', { data: t, revision: 1, updated_at: now(), updated_by: null });
-      store.set('versions', [{ id: 1, number: 1, comment: 'Шаблон по генплану', published_at: now(), published_by: null, data: t }]);
+      store.set('versions', [{ id: 1, number: 1, comment: 'Манеж ДГТУ', published_at: now(), published_by: null, data: t }]);
     }
     if (!store.get('users')) store.set('users', DEMO_USERS);
   }
@@ -215,11 +218,15 @@ class DemoApi {
 export async function createApi() {
   const base = window.API_BASE ?? '';
   if (!window.__FORCE_DEMO__) {
-    try {
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
-      const r = await fetch(base + '/api/health', { signal: ctl.signal }); clearTimeout(t);
-      if (r.ok && (await r.json()).ok) return new ServerApi(base);
-    } catch { /* сервера нет — демо */ }
+    // две попытки: медленная сеть или «просыпающийся» сервис-воркер не должны уводить в демо
+    for (const ms of [6000, 10000]) {
+      try {
+        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+        const r = await fetch(base + '/api/health', { signal: ctl.signal }); clearTimeout(t);
+        if (r.ok && (await r.json()).ok) return new ServerApi(base);
+        break;   // ответил не наш сервер (статический хостинг) — сразу демо
+      } catch { /* нет ответа — пробуем ещё раз, потом демо */ }
+    }
   }
   const d = new DemoApi(); await d.init(); return d;
 }
