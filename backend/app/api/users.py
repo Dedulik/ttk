@@ -86,6 +86,7 @@ def delete_user(user_id):
         raise ApiError(400, "Нельзя удалить последнего администратора")
     for table, col in (("map_drafts", "updated_by"), ("map_versions", "published_by"), ("uploads", "uploaded_by"), ("audit_events", "user_id"), ("venues", "created_by")):
         run(f"UPDATE {table} SET {col} = NULL WHERE {col} = ?", user_id)
+    run("DELETE FROM venue_locks WHERE user_id = ?", user_id)
     run("DELETE FROM users WHERE id = ?", user_id)
     audit(g.user["id"], "user_delete", u["email"])
     get_db().commit()

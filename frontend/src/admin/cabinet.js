@@ -93,6 +93,7 @@ export async function cabinet(root, api, user, section) {
     const card = (v) => `<article class="obj">
       <div class="obj-top"><span class="obj-ic">${esc(v.name.trim()[0] || '?')}</span><div class="t"><h2>${esc(v.name)}</h2><span class="mono">${esc(v.slug)}</span></div>
         <span class="status-pill ${v.published ? 'ok' : 'warn'}">${v.published ? 'Опубликован · v' + v.published : 'Не опубликован'}</span></div>
+      ${v.lock && v.lock.user_id !== user.id ? `<span class="status-pill warn" style="align-self:flex-start">${icon('user')}Сейчас редактирует ${esc(v.lock.name)}</span>` : ''}
       ${v.description ? `<p class="obj-desc">${esc(v.description)}</p>` : ''}
       <p class="cap" style="margin:0">${v.owner ? `Автор: ${esc(v.owner.name)}${v.owner.handle === user.handle ? ' (вы)' : ''} · ` : ''}${v.updated_at ? `черновик изменён ${fmtDate(v.updated_at)}${v.updated_by ? ' · ' + esc(v.updated_by) : ''}` : ''}</p>
       <div class="row">
@@ -120,7 +121,7 @@ export async function cabinet(root, api, user, section) {
       }
       if (a === 'delObj') {
         extra.hidden = !extra.hidden;
-        extra.innerHTML = `<form class="stack danger" data-form="delete" data-slug="${esc(slug)}"><p class="cap" style="margin:0">Удалятся черновик и все опубликованные версии. Это нельзя отменить. Введите адрес объекта <b class="mono">${esc(slug)}</b>, чтобы подтвердить.</p><input class="inp mono" name="confirm" autocomplete="off" required><button class="btn sm primary">Удалить навсегда</button></form>`;
+        extra.innerHTML = `<form class="stack danger" data-form="delete" data-slug="${esc(slug)}"><p class="cap" style="margin:0">Удалить «${esc(list.find((x) => x.slug === slug)?.name || slug)}»? Удалятся черновик и все опубликованные версии — это нельзя отменить.</p><div class="row"><button class="btn sm primary">Удалить навсегда</button><button type="button" class="btn sm ghost" data-act="delObj" data-slug="${esc(slug)}">Отмена</button></div></form>`;
       }
     });
     root.addEventListener('click', (e) => { if (e.target.closest('[data-act="newObj"]')) { const f = $('#newObj'); f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); } });
@@ -131,7 +132,8 @@ export async function cabinet(root, api, user, section) {
       try {
         if (f.id === 'newObj') { const v = await api.createVenue(d); toast('Объект создан — рисуйте план'); location.hash = '#/edit/' + encodeURIComponent(v.slug); return; }
         if (f.dataset.form === 'rename') { await api.updateVenue(f.dataset.slug, d); toast('Сохранено'); return window.__remount(); }
-        if (f.dataset.form === 'delete') { await api.deleteVenue(f.dataset.slug, d.confirm.trim()); toast('Объект удалён'); return window.__remount(); }
+        // подтверждение — сама кнопка «Удалить навсегда»; адрес объекта сервер всё равно сверяет, передаём его сами
+        if (f.dataset.form === 'delete') { await api.deleteVenue(f.dataset.slug, f.dataset.slug); toast('Объект удалён'); return window.__remount(); }
       } catch (ex) { toast(ex.message, 4000); btn.disabled = false; }
     });
     syncStart();

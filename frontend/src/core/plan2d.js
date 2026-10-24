@@ -1,6 +1,6 @@
 // 2D-план в SVG. Размеры подписей и линий заданы в экранных пикселях — на телефоне шрифт не раздувается.
 // Жесты: один палец — сдвиг (или инструмент), два пальца — масштаб, колесо — масштаб к курсору.
-import { CATS, PCATS, catColor, kindOf, mapBox, poiColor, sectorColor, shapeArea, shapeBox, shapePoints, standColor, wallSegments } from './model.js';
+import { CATS, PCATS, catColor, floorById, floorOf, floorStep, floorsSorted, kindOf, mapBox, poiColor, sectorColor, shapeArea, shapeBox, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, ring, secMid, secPts, sp } from './stadium.js';
 import { esc } from './ui.js';
 
@@ -36,7 +36,7 @@ export class Plan2D {
     const svg = this.svg;
     svg.addEventListener('pointerdown', (e) => {
       if (e.button > 0) return;
-      svg.setPointerCapture(e.pointerId);
+      try { svg.setPointerCapture(e.pointerId); } catch { /* указатель уже отпущен */ }
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.pointers.size === 2) {
         if (this.gesture?.tool) this.h.cancel?.();
@@ -99,16 +99,28 @@ export class Plan2D {
     const v = this.view, px = this.px, o = this.opts, admin = o.admin;
     svg.setAttribute('viewBox', `${v.x} ${v.y} ${v.w} ${v.h}`);
     const fs = (n) => (n * px).toFixed(3);
+    const off = o.hidden || new Set(), on = (k) => !off.has(k);   // скрытые слои не рисуются и не нажимаются
     let h = '';
-    if (o.grid) {
+    if (o.grid && on('grid')) {
       const step = [1, 2, 5, 10, 20, 50].find((st) => st / px >= 14) || 100;
       h += `<defs><pattern id="g1" width="${step}" height="${step}" patternUnits="userSpaceOnUse"><path d="M${step} 0H0V${step}" fill="none" stroke="var(--grid)" stroke-width="${fs(1)}"/></pattern></defs><rect x="${v.x}" y="${v.y}" width="${v.w}" height="${v.h}" fill="url(#g1)"/>`;
     }
     // крупные фигуры снизу, вложенные сверху: зону внутри здания видно и можно выбрать отдельно
-    const shapes = [...m.shapes].sort((a, b) => (a.cat === 'plaza' ? -1 : 0) - (b.cat === 'plaza' ? -1 : 0) || shapeArea(b) - shapeArea(a));
+    // этажи: рисуем только текущий; граница участка — на любом этаже, как земля под зданием
+    const ground = floorsSorted(m)[0].id, cur = o.floor || ground, here = (x) => floorOf(x) === cur, below = floorStep(m, cur, -1)?.id;
+    const shapes = [...m.shapes].filter((s) => { const l = shapeLayer(s); return s.cat === 'plaza' || (here(s) && on(l)); })
+      .sort((a, b) => (a.cat === 'plaza' ? -1 : 0) - (b.cat === 'plaza' ? -1 : 0) || shapeArea(b) - shapeArea(a));
+    const shown = new Set(shapes.map((s) => s.id)), freeWall = new Set(m.walls.map((w) => w.id));
     const geom = (s, attrs) => s.type === 'rect' ? `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" ${attrs}/>` : s.type === 'ellipse' ? `<ellipse cx="${s.cx}" cy="${s.cy}" rx="${s.rx}" ry="${s.ry}" ${attrs}/>` : `<polygon points="${pts(s.pts)}" ${attrs}/>`;
     for (const s of shapes.filter((x) => x.cat === 'plaza')) h += geom(s, `data-kind="shape" data-id="${s.id}" fill="var(--plaza)" stroke="var(--line-strong)" stroke-width="${fs(1)}"`);
-    if (admin && o.underlay && o.underlayOpacity > 0) h += `<image href="${o.underlay.src}" x="${o.underlay.x}" y="${o.underlay.y}" width="${o.underlay.w}" height="${o.underlay.h}" opacity="${o.underlayOpacity}" preserveAspectRatio="none" style="pointer-events:none"/>`;
+    if (admin && o.underlay && o.underlayOpacity > 0 && on('underlay')) h += `<image href="${o.underlay.src}" x="${o.underlay.x}" y="${o.underlay.y}" width="${o.underlay.w}" height="${o.underlay.h}" opacity="${o.underlayOpacity}" preserveAspectRatio="none" style="pointer-events:none"/>`;
+    // нижний этаж — бледным контуром: по нему удобно ставить стены и помещения верхнего
+    if (below && o.ghost !== false) {
+      const ghost = `fill="none" stroke="var(--line-strong)" stroke-width="${fs(1)}" stroke-dasharray="${fs(4)} ${fs(3)}" opacity=".55" style="pointer-events:none"`;
+      for (const s of m.shapes) if (s.cat !== 'plaza' && floorOf(s) === below) h += geom(s, ghost);
+      for (const st of m.stairs) if (floorOf(st) === below) h += `<rect x="${st.x}" y="${st.y}" width="${st.w}" height="${st.h}" ${ghost.replace('fill="none"', 'fill="var(--pano)" fill-opacity=".12"')}/>`;
+      for (const seg of wallSegments(m, below)) h += `<line x1="${seg.a[0]}" y1="${seg.a[1]}" x2="${seg.b[0]}" y2="${seg.b[1]}" stroke="var(--line-strong)" stroke-width="${fs(1.2)}" opacity=".45" style="pointer-events:none"/>`;
+    }
     for (const s of shapes) {
       if (s.cat === 'plaza') continue;
       const k = kindOf(s), col = s.color || catColor(m, s.cat), soft = s.cat === 'leisure' || s.cat === 'expo';
@@ -116,41 +128,50 @@ export class Plan2D {
       const dash = s.cat === 'parking' ? `stroke-dasharray="${fs(6)} ${fs(4)}"` : '';
       h += geom(s, `data-kind="shape" data-id="${s.id}" fill="${fill}" fill-opacity="${op}" stroke="${k.walls ? 'none' : col}" stroke-width="${fs(1.4)}" ${dash}`);
     }
-    for (const st of m.stairs) {
+    for (const st of on('stairs') ? m.stairs.filter(here) : []) {
       const n = Math.max(3, Math.round((st.dir === 'x' ? st.w : st.h) / 0.6));
       let lines = '';
       for (let i = 1; i < n; i++) lines += st.dir === 'x' ? `M${st.x + (st.w * i) / n} ${st.y}v${st.h}` : `M${st.x} ${st.y + (st.h * i) / n}h${st.w}`;
       h += `<g data-kind="stairs" data-id="${st.id}"><rect x="${st.x}" y="${st.y}" width="${st.w}" height="${st.h}" fill="var(--room)" stroke="var(--line-strong)" stroke-width="${fs(1)}"/><path d="${lines}" stroke="var(--line-strong)" stroke-width="${fs(0.8)}"/></g>`;
     }
-    for (const seg of wallSegments(m)) h += `<line data-kind="wall" data-id="${seg.owner}" x1="${seg.a[0]}" y1="${seg.a[1]}" x2="${seg.b[0]}" y2="${seg.b[1]}" stroke="${seg.color || 'var(--wall-line)'}" stroke-width="${Math.max(seg.t, 2.2 * px)}" stroke-linecap="square"/>`;
-    for (const d of m.doors) h += `<g data-kind="door" data-id="${d.id}"><circle cx="${d.x}" cy="${d.y}" r="${Math.max(d.w / 2, 5 * px)}" fill="var(--accent)" fill-opacity=".14"/><circle cx="${d.x}" cy="${d.y}" r="${fs(3)}" fill="var(--accent)"/></g>`;
-    if (m.stadium) {
+    for (const seg of wallSegments(m, cur)) if (freeWall.has(seg.owner) ? on('walls') : shown.has(seg.owner)) h += `<line data-kind="wall" data-id="${seg.owner}" x1="${seg.a[0]}" y1="${seg.a[1]}" x2="${seg.b[0]}" y2="${seg.b[1]}" stroke="${seg.color || 'var(--wall-line)'}" stroke-width="${Math.max(seg.t, 2.2 * px)}" stroke-linecap="square"/>`;
+    for (const d of on('doors') ? m.doors.filter(here) : []) h += `<g data-kind="door" data-id="${d.id}"><circle cx="${d.x}" cy="${d.y}" r="${Math.max(d.w / 2, 5 * px)}" fill="var(--accent)" fill-opacity=".14"/><circle cx="${d.x}" cy="${d.y}" r="${fs(3)}" fill="var(--accent)"/></g>`;
+    if (m.stadium && on('stadium') && cur === ground) {
       h += this.stadiumSvg().shapes;
-      if (px < 0.4) for (const sec of SECTORS) { const [x, y] = secMid(sec).xy; h += `<text x="${x}" y="${y}" font-size="${Math.min(2.6, 10 * px)}" class="t-sec">${sec.id}</text>`; }
-      for (const k of ['A', 'B', 'C', 'D']) { const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 92); h += `<text x="${x}" y="${y}" font-size="${fs(11)}" class="t-stand" fill="${standColor(m, k)}">${STANDS[k].short} · ${k}</text>`; }
+      if (px < 0.4 && on('labels')) for (const sec of SECTORS) { const [x, y] = secMid(sec).xy; h += `<text x="${x}" y="${y}" font-size="${Math.min(2.6, 10 * px)}" class="t-sec">${sec.id}</text>`; }
+      if (on('labels')) for (const k of ['A', 'B', 'C', 'D']) { const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 92); h += `<text x="${x}" y="${y}" font-size="${fs(11)}" class="t-stand" fill="${standColor(m, k)}">${STANDS[k].short} · ${k}</text>`; }
     }
     // подписи объектов — только если помещаются
-    for (const s of shapes) {
+    for (const s of on('labels') ? shapes : []) {
       if (s.cat === 'plaza' || !s.name) continue;
       const b = shapeBox(s), size = 11, wpx = b.w / px, need = s.name.length * size * 0.56;
       if (wpx < need + 6 || b.h / px < size + 4) continue;
       h += `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2}" font-size="${fs(size)}" class="t-shape${kindOf(s).walls ? ' b' : ''}">${esc(s.name)}</text>`;
     }
-    if (o.route) h += `<polyline points="${pts(o.route.pts)}" fill="none" stroke="#fff" stroke-width="${fs(8)}" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${pts(o.route.pts)}" fill="none" stroke="var(--accent)" stroke-width="${fs(4.5)}" stroke-linejoin="round" stroke-linecap="round"/>`;
-    if (o.showPanos) {
-      for (const [i, j] of m.links) { const a = m.panos.find((p) => p.id === i), b = m.panos.find((p) => p.id === j); if (a && b) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--pano)" stroke-width="${fs(2.5)}" stroke-dasharray="${fs(6)} ${fs(5)}" opacity=".85" style="pointer-events:none"/>`; }
-      for (const p of m.panos) {
-        const on = o.sel === p.id || o.linkFrom?.() === p.id;
-        h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${on ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(13)}" fill="var(--pano)" fill-opacity=".22"/>` : ''}<circle cx="${p.x}" cy="${p.y}" r="${fs(6.5)}" fill="var(--pano)" stroke="#fff" stroke-width="${fs(2)}"/>${p.img ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(2.2)}" fill="#fff"/>` : ''}</g>`;
-        if (on || px < 0.35) h += `<text x="${p.x}" y="${p.y - 14 * px}" font-size="${fs(11)}" class="t-pano">${esc(p.name)}</text>`;
+    if (o.route) {
+      // на многоэтажном объекте сплошной — участок текущего этажа, пунктир — другие этажи
+      const ez = floorById(m, cur).elev || 0, multi = m.floors.length > 1, rp = o.route.pts;
+      const solid = (p) => !multi || Math.abs((p[2] || 0) - ez) < 1.5;
+      h += `<polyline points="${pts(rp)}" fill="none" stroke="var(--accent)" stroke-width="${fs(3)}" stroke-dasharray="${fs(5)} ${fs(5)}" opacity="${multi ? 0.45 : 0}" stroke-linejoin="round"/>`;
+      for (let i = 1; i < rp.length; i++) if (solid(rp[i - 1]) && solid(rp[i])) {
+        const seg = pts([rp[i - 1], rp[i]]);
+        h += `<polyline points="${seg}" fill="none" stroke="#fff" stroke-width="${fs(8)}" stroke-linecap="round"/><polyline points="${seg}" fill="none" stroke="var(--accent)" stroke-width="${fs(4.5)}" stroke-linecap="round"/>`;
       }
     }
-    for (const p of m.pois) {
+    if (o.showPanos && on('panos')) {
+      for (const [i, j] of m.links) { const a = m.panos.find((p) => p.id === i), b = m.panos.find((p) => p.id === j); if (a && b && (here(a) || here(b))) h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--pano)" stroke-width="${fs(2.5)}" stroke-dasharray="${fs(6)} ${fs(5)}" opacity=".85" style="pointer-events:none"/>`; }
+      for (const p of m.panos.filter(here)) {
+        const sel = o.sel === p.id || o.linkFrom?.() === p.id;
+        h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(13)}" fill="var(--pano)" fill-opacity=".22"/>` : ''}<circle cx="${p.x}" cy="${p.y}" r="${fs(6.5)}" fill="var(--pano)" stroke="#fff" stroke-width="${fs(2)}"/>${p.img ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(2.2)}" fill="#fff"/>` : ''}</g>`;
+        if (sel || (px < 0.35 && on('labels'))) h += `<text x="${p.x}" y="${p.y - 14 * px}" font-size="${fs(11)}" class="t-pano">${esc(p.name)}</text>`;
+      }
+    }
+    for (const p of on('pois') ? m.pois.filter(here) : []) {
       if (o.filter && p.cat !== o.filter) continue;
-      const on = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (on ? 13 : 11) * px;
+      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 13 : 11) * px;
       h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${r * 1.5}" fill="transparent"/><circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${fs(2)}"/>
         <text x="${p.x}" y="${p.y}" font-size="${fs(g.length > 1 ? 8 : 11)}" class="t-glyph">${esc(g)}</text></g>`;
-      if (on || px < 0.3) h += `<text x="${p.x + r + 4 * px}" y="${p.y}" font-size="${fs(12)}" class="t-poi">${esc(p.name)}</text>`;
+      if (sel || (px < 0.3 && on('labels'))) h += `<text x="${p.x + r + 4 * px}" y="${p.y}" font-size="${fs(12)}" class="t-poi">${esc(p.name)}</text>`;
     }
     if (o.sel?.startsWith('sec:')) { const sec = SECTORS.find((x) => x.id === o.sel.slice(4)); if (sec) h += `<polygon points="${pts(secPts(sec))}" fill="none" stroke="var(--ink)" stroke-width="${fs(2.5)}" style="pointer-events:none"/>`; }
     h += typeof o.overlay === 'function' ? o.overlay(px) : o.overlay || '';

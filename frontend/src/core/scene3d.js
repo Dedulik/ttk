@@ -4,7 +4,7 @@
 //   look  — взгляд из точки (панорама, вид с места): палец крутит взгляд, щипок — приближение.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { CATS, PCATS, catColor, kindOf, mapBox, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapePoints, standColor, wallSegments } from './model.js';
+import { CATS, PCATS, catColor, elevOf, floorById, floorsSorted, kindOf, mapBox, neighbors, poiColor, sectorColor, shapeBox, shapeCenter, shapeLayer, shapePoints, standColor, wallSegments } from './model.js';
 import { RANGES, SECTORS, ST, STANDS, TIERS, ring, secMid, sp } from './stadium.js';
 
 const PI = Math.PI;
@@ -46,7 +46,8 @@ export class Scene3D {
   addLights() {
     this.hemi = new THREE.HemisphereLight(0xeaf1f8, 0x8b857c, 1.25); this.scene.add(this.hemi);
     const sun = (this.sun = new THREE.DirectionalLight(0xfff4e6, 2.4));
-    sun.position.set(-260, 420, 300); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004;
+    // normalBias убирает полосы «самозатенения» на стенах (shadow acne)
+    sun.position.set(-260, 420, 300); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.35;
     Object.assign(sun.shadow.camera, { left: -440, right: 440, top: 300, bottom: -300, near: 10, far: 1400 });
     this.scene.add(sun);
   }
@@ -71,13 +72,14 @@ export class Scene3D {
     m.castShadow = opts.cast ?? true; m.receiveShadow = true; Object.assign(m.userData, opts.data || {});
     this.groups[group].add(m); return m;
   }
-  flat(points, mat, y, group, hole) {
+  /** Плоская фигура на высоте y. lay — высота слоя над полом своего этажа (для смещения глубины). */
+  flat(points, mat, y, group, hole, lay = y) {
     const sh = new THREE.Shape(points.map((p) => new THREE.Vector2(p[0] - C.x, p[1] - C.y)));
     if (hole) sh.holes.push(new THREE.Path([...hole].reverse().map((p) => new THREE.Vector2(p[0] - C.x, p[1] - C.y))));
     const g = new THREE.ShapeGeometry(sh, 2); g.rotateX(PI / 2);
     mat.side = THREE.DoubleSide;
-    // слои земли лежат в сантиметрах друг над другом: без смещения глубины они мерцают при обзоре издалека
-    if (y < 1) Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -(2 + Math.round(y * 60)) });
+    // слои пола лежат в сантиметрах друг над другом: без смещения глубины они мерцают при обзоре издалека
+    if (lay < 1) Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -(2 + Math.round(lay * 60)) });
     const m = new THREE.Mesh(g, mat); m.position.y = y; m.receiveShadow = true; this.groups[group].add(m); return m;
   }
   beam(group, a, b, r, mat) {
@@ -131,13 +133,22 @@ export class Scene3D {
     // центр сцены — середина стадиона «Ростов Арены» или рамка объекта, собранного с нуля
     const b = mapBox(map);
     if (map.stadium) { C.x = 400; C.y = 262; this.span = 1; }
-    else { C.x = b.x + b.w / 2; C.y = b.y + b.h / 2; this.span = Math.max(0.25, Math.max(b.w, b.h) / 760); }
+    else { C.x = b.x + b.w / 2; C.y = b.y + b.h / 2; this.span = Math.max(0.3, Math.max(b.w, b.h) / 520); }
     this.half = { x: Math.max(480, b.w * 0.6), z: Math.max(340, b.h * 0.6) };
+    // карта теней — по размеру объекта: на небольшом здании тени резче и без полос
+    const sh = this.sun.shadow.camera, ext = map.stadium ? 440 : Math.max(60, Math.max(b.w, b.h) * 0.6 + 30);
+    Object.assign(sh, { left: -ext, right: ext, top: ext, bottom: -ext }); sh.updateProjectionMatrix();
+    this.sun.position.set(-260 * (ext / 440), 420, 300 * (ext / 440)); this.sun.target.position.set(0, 0, 0);
     this.theme();
     for (const k of ['world', 'stadium', 'roof', 'labels', 'pois', 'panos']) clear(this.groups[k]);
     this.screenSprites = this.screenSprites.filter((s) => this.groups.arrows.getObjectById(s.id) || this.groups.route.getObjectById(s.id));
     this.culled = [];
-    this.buildGround(); this.buildShapes(); if (map.stadium) this.buildStadium(); this.buildPois(); this.buildPanos();
+    const on = this.on, ground = floorsSorted(map)[0].id;
+    // срез по этажу: выше выбранного ничего не строим — так видно, что внутри
+    const top = this.topFloor ? floorById(map, this.topFloor).elev : Infinity;
+    this.z0 = (o) => elevOf(map, o);
+    this.vis = (o) => this.z0(o) <= top + 0.01;
+    this.buildGround(); this.buildShapes(); if (map.stadium && on('stadium') && this.vis({ floor: ground })) this.buildStadium(); if (on('pois')) this.buildPois(); if (on('panos')) this.buildPanos();
     if (this.route) this.setRoute(this.route);
     this.groups.roof.visible = this.roof; this.dirty = true;
   }
@@ -160,49 +171,58 @@ export class Scene3D {
   }
 
   buildShapes() {
-    const m = this.map, white = this.mat('#ffffff'), ref = (id) => ({ data: { ref: id } });
-    const shapes = [...m.shapes].sort((a, b) => shapeBox(b).w * shapeBox(b).h - shapeBox(a).w * shapeBox(a).h);
+    const m = this.map, white = this.mat('#ffffff'), ref = (id) => ({ data: { ref: id } }), on = this.on;
+    const shapes = [...m.shapes].filter((s) => s.cat !== 'plaza' && on(shapeLayer(s)) && this.vis(s)).sort((a, b) => shapeBox(b).w * shapeBox(b).h - shapeBox(a).w * shapeBox(a).h);
+    const shown = new Set(shapes.map((s) => s.id)), freeWall = new Set(m.walls.map((w) => w.id));
     for (const s of shapes) {
-      if (s.cat === 'plaza') continue;
-      const k = kindOf(s), col = new THREE.Color(s.color || catColor(m, s.cat)), c = shapeCenter(s), b = shapeBox(s);
+      const k = kindOf(s), col = new THREE.Color(s.color || catColor(m, s.cat)), c = shapeCenter(s), b = shapeBox(s), z0 = this.z0(s);
       if (!k.walls) {
         let base = new THREE.Color(this.dark ? '#2b2e33' : '#d9d5cd').lerp(col, s.cat === 'leisure' || s.cat === 'expo' ? 0.35 : 0.6);
         if (s.cat === 'parking' && !s.color) base = new THREE.Color('#5d6167');
         if (s.cat === 'sport' && !s.color) base = new THREE.Color('#3f8f46');
         if (s.cat === 'ice' && !s.color) base = new THREE.Color('#e3f1ff');
-        const z = this.flat(shapePoints(s), this.mat(base), s.cat === 'leisure' || s.cat === 'expo' ? 0.08 : 0.16, 'world');
+        const lay = s.cat === 'leisure' || s.cat === 'expo' ? 0.08 : 0.16;
+        const z = this.flat(shapePoints(s), this.mat(base), z0 + lay, 'world', null, lay);
         z.userData.ref = s.id;
-        this.decorate(s, col, white);
+        this.decorate(s, col, white, z0);
       } else {
-        const floor = this.flat(shapePoints(s), this.mat(this.dark ? '#3a3d42' : '#efede8'), 0.12, 'world'); floor.userData.ref = s.id;
+        const floor = this.flat(shapePoints(s), this.mat(this.dark ? '#3a3d42' : '#efede8'), z0 + 0.12, 'world', null, 0.12); floor.userData.ref = s.id;
         if (k.roof) {
-          const roof = this.flat(shapePoints(s), this.mat(this.dark ? '#565a60' : '#e9ebee', { roughness: 0.6 }), s.height || k.height, 'world');
+          const roof = this.flat(shapePoints(s), this.mat(this.dark ? '#565a60' : '#e9ebee', { roughness: 0.6 }), z0 + (s.height || k.height), 'world', null, 9);
           roof.userData.ref = s.id; roof.userData.roofOf = s.id; roof.castShadow = true;
         }
       }
-      if (s.name) { const l = this.label(s.name, { px: 12, maxDist: k.walls ? 650 : Math.max(220, Math.min(520, b.w * 4)) }); l.position.copy(W(c.x, c.y, (s.height || k.height || 0) + 3)); l.userData.ref = s.id; this.groups.labels.add(l); }
+      // мелкие комнаты подписываем только вблизи, иначе подписи админблока слипаются
+      if (s.name && on('labels')) { const l = this.label(s.name, { px: 12, maxDist: k.walls ? Math.max(140, Math.min(650, Math.max(b.w, b.h) * 6)) : Math.max(220, Math.min(520, b.w * 4)) }); l.position.copy(W(c.x, c.y, z0 + (s.height || k.height || 0) + 3)); l.userData.ref = s.id; this.groups.labels.add(l); }
     }
-    const wallMat = this.mat(this.dark ? '#5d6066' : '#f2f1ee'), byColor = {};
+    // у соседних помещений общая стена приходит дважды — вторую копию не строим, иначе две грани в одной плоскости дрожат;
+    // частично совпадающие стены разводим по глубине (polygonOffset) — так одна из граней стабильно «побеждает»
+    const wallMat = [0, 1, 2].map((k) => this.mat(this.dark ? '#5d6066' : '#f2f1ee', { polygonOffset: true, polygonOffsetFactor: -k * 0.5, polygonOffsetUnits: -k * 2 })), byColor = {}, seen = new Set();
+    const key = (s) => { const r = (v) => Math.round(v * 20); const p = [r(s.a[0]), r(s.a[1])], q = [r(s.b[0]), r(s.b[1])]; return [s.floor, ...(p[0] < q[0] || (p[0] === q[0] && p[1] <= q[1]) ? [...p, ...q] : [...q, ...p])].join(','); };
+    let wi = 0;
     for (const seg of wallSegments(m)) {
+      if (freeWall.has(seg.owner) ? !on('walls') || !this.vis(seg) : !shown.has(seg.owner)) continue;
       const dx = seg.b[0] - seg.a[0], dz = seg.b[1] - seg.a[1], L = Math.hypot(dx, dz); if (L < 0.05) continue;
-      const mat = seg.color ? (byColor[seg.color] ||= this.mat(seg.color)) : wallMat;
-      const w = this.add('world', new THREE.BoxGeometry(L + seg.t, seg.h, seg.t), mat, W((seg.a[0] + seg.b[0]) / 2, (seg.a[1] + seg.b[1]) / 2, seg.h / 2), ref(seg.owner));
+      const k = key(seg); if (seen.has(k)) continue; seen.add(k);
+      const mat = seg.color ? (byColor[seg.color + (wi % 3)] ||= this.mat(seg.color, { polygonOffset: true, polygonOffsetFactor: -(wi % 3) * 0.5, polygonOffsetUnits: -(wi % 3) * 2 })) : wallMat[wi % 3];
+      wi++;
+      const w = this.add('world', new THREE.BoxGeometry(L + seg.t, seg.h, seg.t), mat, W((seg.a[0] + seg.b[0]) / 2, (seg.a[1] + seg.b[1]) / 2, this.z0(seg) + seg.h / 2), ref(seg.owner));
       w.rotation.y = Math.atan2(-dz, dx);
     }
-    for (const st of m.stairs) {
-      const n = Math.max(3, Math.round((st.dir === 'x' ? st.w : st.h) / 0.5)), rise = (st.rise || 3) / n;
+    for (const st of on('stairs') ? m.stairs.filter(this.vis) : []) {
+      const z0 = this.z0(st), n = Math.max(3, Math.round((st.dir === 'x' ? st.w : st.h) / 0.5)), rise = (st.rise || 3) / n;
       for (let i = 0; i < n; i++) {
         const along = st.dir === 'x' ? st.w : st.h, u = (along * (i + 0.5)) / n;
         const geo = st.dir === 'x' ? new THREE.BoxGeometry(along / n, rise * (i + 1), st.h) : new THREE.BoxGeometry(st.w, rise * (i + 1), along / n);
-        const pos = st.dir === 'x' ? W(st.x + u, st.y + st.h / 2, (rise * (i + 1)) / 2) : W(st.x + st.w / 2, st.y + u, (rise * (i + 1)) / 2);
+        const pos = st.dir === 'x' ? W(st.x + u, st.y + st.h / 2, z0 + (rise * (i + 1)) / 2) : W(st.x + st.w / 2, st.y + u, z0 + (rise * (i + 1)) / 2);
         this.add('world', geo, this.mat('#cfccc6'), pos, ref(st.id));
       }
     }
   }
 
-  decorate(s, col, white) {
+  decorate(s, col, white, z0 = 0) {
     if (s.type !== 'rect') return;
-    const cx = s.x + s.w / 2, cy = s.y + s.h / 2, add = (geo, mat, pos) => this.add('world', geo, mat, pos, { data: { ref: s.id } });
+    const cx = s.x + s.w / 2, cy = s.y + s.h / 2, add = (geo, mat, pos) => { pos.y += z0; return this.add('world', geo, mat, pos, { data: { ref: s.id } }); };
     if (s.cat === 'sport') for (const [w, d, x, y] of [[s.w, 0.3, cx, s.y + 0.6], [s.w, 0.3, cx, s.y + s.h - 0.6], [0.3, s.h, s.x + 0.6, cy], [0.3, s.h, s.x + s.w - 0.6, cy], [s.w - 1.2, 0.3, cx, cy]]) add(new THREE.BoxGeometry(w, 0.04, d), white, W(x, y, 0.2));
     if (s.cat === 'ice') for (const [w, d, x, y] of [[s.w, 0.3, cx, s.y], [s.w, 0.3, cx, s.y + s.h], [0.3, s.h, s.x, cy], [0.3, s.h, s.x + s.w, cy]]) add(new THREE.BoxGeometry(w, 1.1, d), white, W(x, y, 0.55));
     if (s.cat === 'parking') {
@@ -210,7 +230,7 @@ export class Scene3D {
       for (let r = 0; r < rows; r++) for (let i = 0; i < cols; i++) if ((i * 7 + r * 13) % 10 < 6) cars.push([s.x + 1.4 + i * 2.7, s.y + 7 + r * 15]);
       const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 1.45, 4.4), this.mat('#ffffff', { roughness: 0.4, metalness: 0.2 }), cars.length);
       const palette = ['#9aa3ad', '#e4e6e8', '#2f353c', '#a33a3a', '#3b5b8c'].map((h) => new THREE.Color(h)), mx = new THREE.Matrix4();
-      cars.forEach(([x, y], i) => { mx.makeTranslation(x - C.x, 0.9, y - C.y); inst.setMatrixAt(i, mx); inst.setColorAt(i, palette[i % palette.length]); });
+      cars.forEach(([x, y], i) => { mx.makeTranslation(x - C.x, z0 + 0.9, y - C.y); inst.setMatrixAt(i, mx); inst.setColorAt(i, palette[i % palette.length]); });
       inst.castShadow = true; inst.userData.ref = s.id; this.groups.world.add(inst);
     }
     if (s.cat === 'stage') { add(new THREE.BoxGeometry(s.w, 1.5, s.h), this.mat(col), W(cx, cy, 0.75)); add(new THREE.BoxGeometry(0.6, 9, s.h * 0.8), this.mat('#1d2027', { emissive: '#23345e', emissiveIntensity: 0.7 }), W(s.x + s.w - 0.5, cy, 6)); }
@@ -282,6 +302,7 @@ export class Scene3D {
     const lg = new THREE.BufferGeometry().setFromPoints(cables);
     this.groups.roof.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0xc9cdd2 })));
     // подписи трибун и секторов
+    if (!this.on('labels')) return;
     for (const k of ['A', 'B', 'C', 'D']) {
       const [a, b] = RANGES[k], [x, y] = sp((a + b) / 2, 50), l = this.label(`${STANDS[k].short} · ${k}`, { px: 13, bg: standColor(m, k), fg: '#fff', maxDist: 900 });
       l.position.copy(W(x, y, 40)); l.userData.ref = 'sec:' + SECTORS.find((s) => s.stand === k && s.tier === 'lower').id; this.groups.labels.add(l);
@@ -313,22 +334,23 @@ export class Scene3D {
   }
 
   buildPois() {
-    for (const p of this.map.pois) {
-      const c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g;
+    for (const p of this.map.pois.filter(this.vis)) {
+      const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g;
       const pin = this.canvasSprite((x, w, h) => {
         x.fillStyle = 'rgba(0,0,0,.25)'; x.beginPath(); x.ellipse(w / 2, h - 2, 5, 2, 0, 0, 2 * PI); x.fill();
         x.fillStyle = c; x.strokeStyle = '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 14, 11.5, 0, 2 * PI); x.fill(); x.stroke();
         x.beginPath(); x.moveTo(w / 2 - 5, 23); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 5, 23); x.fill();
         x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 9 : 12}px -apple-system, "Segoe UI", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 14.5);
       }, 30, 40, 34, { cy: 0, order: 20 });
-      pin.position.copy(W(p.x, p.y, (p.z || 0) + 0.3)); pin.userData.ref = p.id; this.groups.pois.add(pin);
-      const l = this.label(p.name, { px: 12, maxDist: 260 }); l.center.set(0.5, -1.15); l.position.copy(W(p.x, p.y, (p.z || 0) + 0.3)); l.userData.ref = p.id; this.groups.pois.add(l);
+      pin.position.copy(W(p.x, p.y, pz + 0.3)); pin.userData.ref = p.id; this.groups.pois.add(pin);
+      if (!this.on('labels')) continue;
+      const l = this.label(p.name, { px: 12, maxDist: 260 }); l.center.set(0.5, -1.15); l.position.copy(W(p.x, p.y, pz + 0.3)); l.userData.ref = p.id; this.groups.pois.add(l);
     }
   }
   buildPanos() {
-    for (const p of this.map.panos) {
+    for (const p of this.map.panos.filter(this.vis)) {
       const s = this.canvasSprite((x, w, h) => { x.fillStyle = '#2f6fe0'; x.strokeStyle = '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, h / 2, 7.5, 0, 2 * PI); x.fill(); x.stroke(); }, 20, 20, 16, { order: 15 });
-      s.position.copy(W(p.x, p.y, (p.z || 0) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
+      s.position.copy(W(p.x, p.y, this.z0(p) + (p.z || 0) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
     }
   }
 
@@ -341,6 +363,15 @@ export class Scene3D {
     this.groups.route.add(tube);
   }
   setRoof(on) { this.dirty = true; this.roof = on; this.groups.roof.visible = on && !this.look; }
+  /** Показать этажи до этого включительно (null — все). */
+  setFloorView(id) { this.topFloor = id || null; if (this.map) this.setMap(this.map); }
+  /** Скрыть слои карты (ключи из LAYERS): сцена пересобирается без них, крыша просто прячется. */
+  setHidden(hidden) {
+    this.hidden = new Set(hidden);
+    this.roof = !this.hidden.has('roof');
+    if (this.map) this.setMap(this.map);
+  }
+  get on() { const h = this.hidden || new Set(); return (k) => !h.has(k); }
 
   // ---------- камера: обзор ----------
   overview(now) { const k = this.span || 1; this.flyTo(W(C.x, C.y), new THREE.Vector3(-150 * k, 330 * k, 360 * k), now); }
@@ -373,7 +404,7 @@ export class Scene3D {
   }
   exitLook(silent) {
     if (!this.look) return;
-    const { plan } = this.look; this.look = null; this.setPhoto(null); clear(this.groups.arrows);
+    const { plan } = this.look; this.look = null; this.anim = null; this.gliding = false; this.setPhoto(null); clear(this.groups.arrows);
     this.controls.enabled = true; this.groups.panos.visible = true; this.groups.route.visible = true; this.groups.roof.visible = this.roof;
     this.camera.fov = 45; this.camera.near = NEAR_ORBIT; this.camera.updateProjectionMatrix(); this.resizeSprites(); this.dirty = true;
     if (!silent) { const t = W(plan.x, plan.y); this.camera.position.copy(t.clone().add(new THREE.Vector3(-40, 60, 60))); this.controls.target.copy(t); this.focus(plan.x, plan.y, 60); }
@@ -385,12 +416,47 @@ export class Scene3D {
     if (this.camera.fov !== L.fov) { this.camera.fov = L.fov; this.camera.updateProjectionMatrix(); this.resizeSprites(); }
     this.dirty = true; this.onLook?.(L);
   }
-  /** Плавный переход взгляда в другую точку. */
-  glideTo(x, y, z, done) {
-    const L = this.look, from = L.pos.clone(), to = W(x, y, z), d = from.distanceTo(to), dur = Math.max(900, Math.min(2600, 650 + d * 9));
-    this.setPhoto(null, true);
-    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, done: () => { L.plan = { x, y }; done?.(); } };
+  /**
+   * Плавный переход взгляда в другую точку. next = { url, rot } — фото следующей точки.
+   * Между двумя фото 3D-модель не показываем: сначала дожидаемся загрузки следующего фото,
+   * потом камера едет, а старое фото растворяется в новом.
+   */
+  async glideTo(x, y, z, done, next = {}) {
+    const L = this.look; if (!L || this.gliding) return;
+    this.gliding = true;
+    const nextTex = next.url ? await this.loadTex(next.url).catch(() => null) : null;
+    if (!this.look) { this.gliding = false; return; }
+    const from = L.pos.clone(), to = W(x, y, z), d = from.distanceTo(to);
+    const both = !!(this.sphere && nextTex), dur = both ? Math.max(700, Math.min(1500, 500 + d * 6)) : Math.max(900, Math.min(2600, 650 + d * 9));
+    const old = this.sphere; this.sphere = null; this.fading = old;
+    if (nextTex) {
+      this.sphere = this.makeSphere(nextTex, next.rot, to); this.sphere.material.opacity = 0;
+      if (!old) this.setWorldVisible(true);   // из вида-3D в фото — модель видна, пока фото проявляется
+    } else this.setWorldVisible(true);
+    this.anim = { look: true, from, to, s: performance.now(), dur, fov: L.fov, both, done: () => { L.plan = { x, y }; this.gliding = false; if (this.sphere) this.setWorldVisible(false); done?.(); } };
   }
+  setWorldVisible(on) { for (const k of ['world', 'stadium', 'labels']) this.groups[k].visible = on; this.groups.roof.visible = on && this.roof; this.dirty = true; }
+
+  // ---------- фото 360°: загрузка с кэшем и сфера вокруг камеры ----------
+  loadTex(url) {
+    this.texCache ||= new Map();
+    if (this.texCache.has(url)) return this.texCache.get(url);
+    const p = new Promise((res, rej) => new THREE.TextureLoader().load(url, (t) => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = this.renderer.capabilities.getMaxAnisotropy(); res(t); }, undefined, rej));
+    this.texCache.set(url, p);
+    if (this.texCache.size > 10) { const [k, v] = this.texCache.entries().next().value; this.texCache.delete(k); v.then((t) => t.dispose()).catch(() => {}); }
+    return p;
+  }
+  /** Заранее подгрузить фото соседних точек — переход к ним начнётся без задержки. */
+  preload(urls) { for (const u of urls) if (u) this.loadTex(u).catch(() => {}); }
+  makeSphere(tex, rotDeg, pos) {
+    // сфера большая: камера при переходе едет внутри обеих сфер, и фото не «рвётся»
+    const g = new THREE.SphereGeometry(400, 64, 40); g.scale(-1, 1, 1);
+    const s = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, fog: false, transparent: true, opacity: 1, depthWrite: false, depthTest: false }));
+    // поверх модели (она под фото скрыта), но под стрелками переходов
+    s.renderOrder = 50; s.position.copy(pos); s.rotation.y = ((rotDeg || 0) * PI) / 180; this.scene.add(s);
+    return s;
+  }
+  dropSphere(s) { if (!s) return; this.scene.remove(s); s.geometry.dispose(); s.material.dispose(); }   // текстура остаётся в кэше
   setArrows(items) { this.dirty = true;
     clear(this.groups.arrows);
     if (!this.look) return;
@@ -400,27 +466,27 @@ export class Scene3D {
       const dx = it.x - x, dy = it.y - y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, g = new THREE.Group();
       g.userData.to = it.id;
       const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-PI / 2);
-      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x2f6fe0, side: THREE.DoubleSide, depthTest: false, fog: false })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 30;
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 29;
+      const arrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x2f6fe0, side: THREE.DoubleSide, depthTest: false, fog: false, transparent: true })); arrow.scale.setScalar(1.25); arrow.rotation.y = Math.atan2(-ux, -uy); arrow.renderOrder = 201;
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, fog: false })); disc.rotation.x = -PI / 2; disc.position.y = -0.01; disc.renderOrder = 200;
       g.add(disc, arrow); g.position.copy(this.look.pos.clone().add(new THREE.Vector3(ux * 2.7, -this.look.pos.y + 0.25 + Math.max(0, this.look.pos.y - 1.6), uy * 2.7)));
-      const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 11, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 31; l.position.set(0, 0.7, 0); g.add(l);
+      const l = this.label(`${it.name} · ${Math.round(L)} м`, { px: 11, bg: 'rgba(23,24,26,.84)', fg: '#fff', maxDist: 1e9 }); l.material.depthTest = false; l.renderOrder = 202; l.position.set(0, 0.7, 0); g.add(l);
       this.groups.arrows.add(g);
     }
   }
-  setPhoto(url, fadeOnly) { this.dirty = true;
-    if (this.sphere) {
-      const old = this.sphere; this.sphere = null;
-      if (fadeOnly) { this.fading = old; } else { this.scene.remove(old); old.geometry.dispose(); old.material.map?.dispose(); old.material.dispose(); }
-    }
-    for (const k of ['world', 'stadium', 'labels']) this.groups[k].visible = true;
-    this.groups.roof.visible = this.roof;
-    if (!url || !this.look) return;
-    const tex = new THREE.TextureLoader().load(url); tex.colorSpace = THREE.SRGBColorSpace;
-    const g = new THREE.SphereGeometry(60, 64, 40); g.scale(-1, 1, 1);
-    this.sphere = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, fog: false, transparent: true, opacity: 1 }));
-    this.sphere.position.copy(this.look.pos); this.sphere.rotation.y = -this.look.yaw0 || 0; this.scene.add(this.sphere);
-    for (const k of ['world', 'stadium', 'roof', 'labels']) this.groups[k].visible = false;
+  /** Показать фото 360° в текущей точке (rotDeg — поворот фото, чтобы оно совпало с планом и стрелками). */
+  async setPhoto(url, rotDeg) {
+    this.dirty = true;
+    this.dropSphere(this.sphere); this.sphere = null; this.dropSphere(this.fading); this.fading = null;
+    if (!url || !this.look) { this.setWorldVisible(true); return; }
+    this.setWorldVisible(false);   // сразу прячем 3D, чтобы до загрузки фото не мелькала модель
+    const token = (this.photoToken = (this.photoToken || 0) + 1);
+    const tex = await this.loadTex(url).catch(() => null);
+    if (token !== this.photoToken || !this.look) return;
+    if (!tex) { this.setWorldVisible(true); return; }
+    this.sphere = this.makeSphere(tex, rotDeg, this.look.pos); this.dirty = true;
   }
+  /** Повернуть фото текущей точки (настройка в конструкторе). */
+  setPhotoRot(rotDeg) { if (this.sphere) { this.sphere.rotation.y = ((rotDeg || 0) * PI) / 180; this.dirty = true; } }
 
   // ---------- указатель ----------
   bindPointer() {
@@ -482,13 +548,16 @@ export class Scene3D {
     if (a) {
       const k = Math.min(1, (now - a.s) / a.dur), e = ease(k);
       if (a.look) {
-        this.look.pos.lerpVectors(a.from, a.to, e); this.look.fov = a.fov - 7 * Math.sin(PI * k);
-        if (this.fading) this.fading.material.opacity = Math.max(0, 1 - k * 2.5);
+        // фото → фото: лёгкий «наезд» и перекрёстное растворение; иначе — старое фото быстро уходит в модель
+        this.look.pos.lerpVectors(a.from, a.to, e); this.look.fov = a.fov - (a.both ? 4 : 7) * Math.sin(PI * k);
+        if (this.fading) this.fading.material.opacity = a.both ? 1 - e : Math.max(0, 1 - k * 2.5);
+        if (this.sphere && this.sphere.material.opacity < 1) this.sphere.material.opacity = a.both ? e : Math.min(1, Math.max(0, (k - 0.6) / 0.4));
         this.applyLook();
       } else { this.camera.position.lerpVectors(a.p0, a.p1, e); this.controls.target.lerpVectors(a.t0, a.t1, e); this.camera.lookAt(this.controls.target); }
       if (k >= 1) {
         this.anim = null;
-        if (this.fading) { this.scene.remove(this.fading); this.fading.geometry.dispose(); this.fading.material.map?.dispose(); this.fading.material.dispose(); this.fading = null; }
+        this.dropSphere(this.fading); this.fading = null;
+        if (this.sphere) this.sphere.material.opacity = 1;
         if (a.look) { this.look.fov = a.fov; this.applyLook(); }
         a.done?.();
       }

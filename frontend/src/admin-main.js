@@ -4,7 +4,7 @@
 //   #/team        — команда и администраторы (только администратор)
 //   #/security    — защита базы, резервные копии, журнал (только администратор)
 //   #/edit/<slug> — конструктор карты объекта
-import { createApi } from './core/api.js';
+import { can, createApi } from './core/api.js';
 
 let root = document.getElementById('app');
 const api = await createApi();
@@ -20,7 +20,9 @@ async function mount() {
     else if (editing()) {
       const { editor } = await import('./admin/admin.js');
       api.use(decodeURIComponent(location.hash.slice(7).split(/[?#/]/)[0]));
-      editor(root, api, user, await api.draft());
+      // один редактор за раз: если объект занят, конструктор откроется только для просмотра
+      const lock = can(user, 'editor') ? await api.lock().catch(() => ({ mine: true })) : { mine: false };
+      editor(root, api, user, await api.draft(), lock);
     } else await cabinet(root, api, user, location.hash.replace(/^#\/?/, '') || 'objects');
     root.classList.remove('boot');
   } catch (e) {

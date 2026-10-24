@@ -55,6 +55,10 @@ class ServerApi {
   async published() { const r = await this.req('GET', `${this.v}/map`); return { ...r, data: normalize(r.data) }; }
   async draft() { const r = await this.req('GET', `${this.v}/draft`); return { ...r, data: normalize(r.data) }; }
   saveDraft(data, base_revision) { return this.req('PUT', `${this.v}/draft`, { data, base_revision }); }
+  /** Замок редактирования: { mine, holder }. Продлевать раз в 15 с, отпускать при выходе. */
+  lock() { return this.req('POST', `${this.v}/lock`); }
+  unlock() { return fetch(this.base + `${this.v}/lock`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + this.token }, keepalive: true }).catch(() => {}); }
+  async revision() { const r = await this.req('GET', `${this.v}/draft`); return r.revision; }
   publish(comment) { return this.req('POST', `${this.v}/publish`, { comment }); }
   versions() { return this.req('GET', `${this.v}/versions`); }
   restore(id) { return this.req('POST', `${this.v}/versions/${id}/restore`); }
@@ -104,6 +108,9 @@ class DemoApi {
     const d = store.get('draft'), v = store.get('versions', [])[0];
     return [{ slug: DEFAULT_SLUG, name: 'Ростов Арена', description: 'Демо в браузере', published: v?.number, published_at: v?.published_at, revision: d?.revision, updated_at: d?.updated_at, updated_by: d?.updated_by }];
   }
+  async lock() { return { mine: true }; }
+  unlock() {}
+  async revision() { return store.get('draft')?.revision; }
   async venuesBy() { return { owner: { name: 'Администратор', handle: 'admin' }, venues: await this.venues() }; }
   createVenue = serverOnly; updateVenue = serverOnly; deleteVenue = serverOnly;
   audit = serverOnly; security = serverOnly; backup = serverOnly; logoutAll = serverOnly;

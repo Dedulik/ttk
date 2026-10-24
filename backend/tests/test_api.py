@@ -140,6 +140,31 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(b.data.startswith(b"SQLite format 3"))
         b.close()
 
+    def test_edit_lock(self):
+        """В объекте редактирует один человек; второй видит, кто занят, и не может сохранить, пока замок не снят."""
+        c = self.c
+        editor = self.login("editor@arena.local", "editor12345")
+        admin = self.login("admin@arena.local", "admin12345")
+        self.assertTrue(c.post(f"/api/venues/{SLUG}/lock", headers=editor).get_json()["mine"])
+        busy = c.post(f"/api/venues/{SLUG}/lock", headers=admin).get_json()
+        self.assertFalse(busy["mine"])
+        self.assertEqual(busy["holder"]["name"], "Редактор")
+        d = c.get(f"/api/venues/{SLUG}/draft", headers=admin).get_json()
+        self.assertEqual(d["venue"]["lock"]["name"], "Редактор")
+        self.assertEqual(c.put(f"/api/venues/{SLUG}/draft", json={"data": d["data"], "base_revision": d["revision"]}, headers=admin).status_code, 423)
+        self.assertEqual(c.post(f"/api/venues/{SLUG}/publish", json={}, headers=admin).status_code, 423)
+        # хозяин замка сохраняет — ревизия растёт, второй увидит её при следующем опросе
+        r = c.put(f"/api/venues/{SLUG}/draft", json={"data": d["data"], "base_revision": d["revision"]}, headers=editor)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(c.get(f"/api/venues/{SLUG}/draft", headers=admin).get_json()["revision"], d["revision"] + 1)
+        # вышел из конструктора — объект свободен
+        self.assertEqual(c.delete(f"/api/venues/{SLUG}/lock", headers=editor).status_code, 204)
+        self.assertTrue(c.post(f"/api/venues/{SLUG}/lock", headers=admin).get_json()["mine"])
+        # брошенный замок (вкладку закрыли без выхода) истекает сам
+        from app.db import connect
+        con = connect(self.app.config["DB_PATH"]); con.execute("UPDATE venue_locks SET seen = '2000-01-01T00:00:00+00:00'"); con.commit(); con.close()
+        self.assertTrue(c.post(f"/api/venues/{SLUG}/lock", headers=editor).get_json()["mine"])
+
     def test_venues_constructor(self):
         c = self.c
         editor = self.login("editor@arena.local", "editor12345")
