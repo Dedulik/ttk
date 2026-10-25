@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "${APP_BIND:-8000}:8000"                 # с профилем https: APP_BIND=127.0.0.1:8001 — порт 8000 займёт caddy
     environment:
       SECRET_KEY: ${SECRET_KEY:-}                   # пусто — случайный ключ в data/secret.key (в томе)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@arena.local}
@@ -22,6 +22,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8000:8000"                              # переадресация старых ссылок http://IP:8000 на https
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     volumes:

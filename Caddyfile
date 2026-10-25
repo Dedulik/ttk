@@ -1,6 +1,12 @@
 # HTTPS для сайта (нужен камере для съёмки панорам и PWA). Сертификат Let's Encrypt Caddy получает сам.
 # Запуск: DOMAIN=map.example.ru docker compose --profile https up -d --build
+# Нет своего домена — подойдёт бесплатный по IP: DOMAIN=193-233-246-152.sslip.io
 {$DOMAIN} {
 	encode gzip
 	reverse_proxy app:8000
+}
+
+# Старые ссылки и QR-коды вида http://IP:8000 ведут на защищённый адрес
+http://:8000 {
+	redir https://{$DOMAIN}{uri} permanent
 }
