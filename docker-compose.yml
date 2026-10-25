@@ -4,10 +4,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      SECRET_KEY: ${SECRET_KEY:-change-me-please}
+      SECRET_KEY: ${SECRET_KEY:-}                   # пусто — случайный ключ в data/secret.key (в томе)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@arena.local}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
-      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-1}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}          # пусто — пароль придумает сервер (data/admin-password.txt в томе)
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-0}
     volumes:
       - arena-data:/data
     restart: unless-stopped

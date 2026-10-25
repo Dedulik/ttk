@@ -24,10 +24,12 @@ def load() -> dict:
         "MAX_VIDEO_MB": int(env("MAX_VIDEO_MB", "60")),   # видео переходов между точками
         "MAX_MAP_BYTES": int(env("MAX_MAP_BYTES", str(2 * 1024 * 1024))),
         "CORS_ORIGINS": [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()],
-        # первый администратор создаётся при пустой базе — смените пароль после входа
+        # первый администратор создаётся при пустой базе. ADMIN_PASSWORD не задан — сервер сам придумывает
+        # надёжный пароль и сохраняет его в data/admin-password.txt (а не использует общеизвестный admin12345)
         "ADMIN_EMAIL": env("ADMIN_EMAIL", "admin@arena.local"),
-        "ADMIN_PASSWORD": env("ADMIN_PASSWORD", "admin12345"),
-        "SEED_DEMO_USERS": env("SEED_DEMO_USERS", "1") == "1",
+        "ADMIN_PASSWORD": env("ADMIN_PASSWORD", ""),
+        # учебные записи editor@ / viewer@ с паролями из README — только по явному SEED_DEMO_USERS=1
+        "SEED_DEMO_USERS": env("SEED_DEMO_USERS", "0") == "1",
         # регистрация посетителей (роль «посетитель», без доступа к админке)
         "ALLOW_REGISTRATION": env("ALLOW_REGISTRATION", "1") == "1",
         # приглашения сотрудников и администраторов: срок жизни ссылки, адрес сайта для писем

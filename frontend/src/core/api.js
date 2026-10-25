@@ -140,8 +140,9 @@ class DemoApi {
     store.set('users', us); return pub(u);
   }
   async init() {
-    // раньше демо открывало «Ростов Арену» — переходим на Манеж ДГТУ один раз
-    if (store.get('main') !== DEFAULT_SLUG) { store.set('draft', null); store.set('versions', null); store.set('main', DEFAULT_SLUG); }
+    // карта в репозитории обновилась (или раньше демо открывало «Ростов Арену») — берём свежую один раз
+    const DEMO_DATA = DEFAULT_SLUG + '@v6';
+    if (store.get('main') !== DEMO_DATA) { store.set('draft', null); store.set('versions', null); store.set('main', DEMO_DATA); }
     if (!store.get('draft')) {
       const t = await loadTemplate();
       store.set('draft', { data: t, revision: 1, updated_at: now(), updated_by: null });

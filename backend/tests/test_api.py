@@ -17,7 +17,8 @@ def png_header(w, h):
 class ApiTest(unittest.TestCase):
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())
-        self.app = create_app({"DB_PATH": str(tmp / "t.db"), "UPLOAD_DIR": str(tmp / "up"), "SECRET_KEY": "test-secret-key-for-unit-tests-only"})
+        self.app = create_app({"DB_PATH": str(tmp / "t.db"), "UPLOAD_DIR": str(tmp / "up"), "SECRET_KEY": "test-secret-key-for-unit-tests-only",
+                                   "ADMIN_PASSWORD": "admin12345", "SEED_DEMO_USERS": True})
         from app import security
         security._ip_fails.clear()   # счётчик неудачных входов общий на процесс
         self.c = self.app.test_client()

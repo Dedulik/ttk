@@ -69,7 +69,9 @@ def check_password(pw: str) -> str:
 
 def load_secret(cfg: dict) -> str:
     """Секрет для подписи токенов. Если он не задан в окружении, создаётся случайный и хранится рядом с базой."""
-    if cfg["SECRET_KEY"] != DEFAULT_SECRET:
+    # пустой ключ и учебные значения из примеров не годятся: зная их, можно подделать вход под любым пользователем
+    weak = {DEFAULT_SECRET, "", "change-me-please", "поменяйте-на-длинную-случайную-строку"}
+    if cfg["SECRET_KEY"] not in weak and len(cfg["SECRET_KEY"]) >= 16:
         cfg["SECRET_SOURCE"] = "env"
         return cfg["SECRET_KEY"]
     path = Path(cfg["DB_PATH"]).parent / "secret.key"

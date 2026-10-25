@@ -7,7 +7,9 @@ import mimetypes
 import hashlib
 import json
 import re
+import secrets
 import sqlite3
+import string
 from datetime import datetime
 from pathlib import Path
 
@@ -30,13 +32,35 @@ def seed_venue(con, slug: str, name: str, path: str, comment: str) -> None:
         con.execute("INSERT INTO map_versions (venue_id, number, data, comment, published_at) VALUES (?,1,?,?,?)", (vid, raw, comment, now()))
 
 
+def new_password() -> str:
+    """Случайный пароль из 14 символов: буквы и цифры (проходит правила сложности сайта)."""
+    abc = string.ascii_letters + string.digits
+    while True:
+        pw = "".join(secrets.choice(abc) for _ in range(14))
+        if any(c.isdigit() for c in pw) and any(c.isalpha() for c in pw):
+            return pw
+
+
+def save_admin_password(cfg: dict, email: str, pw: str) -> Path:
+    """Пароль администратора — в data/admin-password.txt рядом с базой (папка data/ не попадает в git)."""
+    path = Path(cfg["DB_PATH"]).parent / "admin-password.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"Админ-панель: http://localhost:8000/admin\nПочта: {email}\nПароль: {pw}\n"
+                    "Смените пароль в личном кабинете. Забыли — python reset_password.py\n", encoding="utf-8")
+    restrict(path)
+    return path
+
+
 def seed(cfg: dict) -> None:
     con = connect(cfg["DB_PATH"])
     migrate(con)
     seed_venue(con, cfg["MAIN_SLUG"], cfg["MAIN_NAME"], cfg["MAIN_PATH"], "Манеж ДГТУ")
     seed_venue(con, cfg["VENUE_SLUG"], "Ростов Арена", cfg["TEMPLATE_PATH"], "Шаблон по генплану")
     if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-        people = [(cfg["ADMIN_EMAIL"], "Администратор", cfg["ADMIN_PASSWORD"], "admin")]
+        pw = cfg["ADMIN_PASSWORD"] or new_password()
+        if not cfg["ADMIN_PASSWORD"]:
+            save_admin_password(cfg, cfg["ADMIN_EMAIL"], pw)
+        people = [(cfg["ADMIN_EMAIL"], "Администратор", pw, "admin")]
         if cfg["SEED_DEMO_USERS"]:
             people += [("editor@arena.local", "Редактор", "editor12345", "editor"), ("viewer@arena.local", "Наблюдатель", "viewer12345", "viewer")]
         for email, name, pw, role in people:
