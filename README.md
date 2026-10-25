@@ -62,8 +62,11 @@ python reset_password.py ivan@example.com # любая учётная запис
 ### Через Docker
 
 ```bash
-docker compose up --build        # → http://localhost:8000, данные в томе arena-data
+docker compose up -d --build                         # → http://localhost:8000
+docker compose exec app cat /data/admin-password.txt # пароль администратора
 ```
+
+Пошагово для VPS (Aeza): обновление, сброс пароля, домен и HTTPS — [docs/DEPLOY_AEZA.md](docs/DEPLOY_AEZA.md).
 
 ### Демо без сервера
 

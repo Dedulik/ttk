@@ -1,0 +1,12 @@
+# В образ не попадают локальная база, пароли, ключ, загрузки и окружение Python с компьютера разработчика
+backend/data/
+backend/.venv/
+**/__pycache__/
+*.pyc
+.git/
+.github/
+.claude/
+.idea/
+.vscode/
+dist/
+*.bundle

@@ -10,7 +10,7 @@
 import sys
 
 from app import config
-from app.__init__ import new_password, save_admin_password
+from app import new_password, save_admin_password
 from app.db import connect, migrate, now
 from app.security import hash_password
 

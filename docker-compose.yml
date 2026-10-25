@@ -6,10 +6,28 @@ services:
     environment:
       SECRET_KEY: ${SECRET_KEY:-}                   # пусто — случайный ключ в data/secret.key (в томе)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@arena.local}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}          # пусто — пароль придумает сервер (data/admin-password.txt в томе)
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}          # пусто — пароль придумает сервер: docker compose exec app cat /data/admin-password.txt
+      ADMIN_PASSWORD_RESET: ${ADMIN_PASSWORD_RESET:-0}  # 1 — при запуске выставить пароль из ADMIN_PASSWORD
+      PUBLIC_URL: ${PUBLIC_URL:-}                  # https://ваш-домен — для ссылок в приглашениях
       SEED_DEMO_USERS: ${SEED_DEMO_USERS:-0}
+      TRUST_PROXY: ${TRUST_PROXY:-0}               # 1 — если сайт открывают через caddy (профиль https)
     volumes:
       - arena-data:/data
     restart: unless-stopped
+  # HTTPS-прокси (по желанию): DOMAIN=map.example.ru docker compose --profile https up -d --build
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
 volumes:
   arena-data:
+  caddy-data:

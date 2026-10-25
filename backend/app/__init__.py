@@ -58,8 +58,10 @@ def save_admin_password(cfg: dict, email: str, pw: str) -> Path:
     """Пароль администратора — в data/admin-password.txt рядом с базой (папка data/ не попадает в git)."""
     path = Path(cfg["DB_PATH"]).parent / "admin-password.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"Админ-панель: http://localhost:8000/admin\nПочта: {email}\nПароль: {pw}\n"
-                    "Смените пароль в личном кабинете. Забыли — python reset_password.py\n", encoding="utf-8")
+    site = (cfg.get("PUBLIC_URL") or "http://localhost:8000").rstrip("/")
+    path.write_text(f"Админ-панель: {site}/admin\nПочта: {email}\nПароль: {pw}\n"
+                    "Смените пароль в личном кабинете. Забыли — python reset_password.py "
+                    "(в Docker: docker compose exec app python reset_password.py)\n", encoding="utf-8")
     restrict(path)
     return path
 
@@ -67,6 +69,11 @@ def save_admin_password(cfg: dict, email: str, pw: str) -> Path:
 def seed(cfg: dict) -> None:
     con = connect(cfg["DB_PATH"])
     migrate(con)
+    # BEGIN IMMEDIATE — запись в базу только у одного процесса: второй воркер gunicorn ждёт, пока первый закончит,
+    # и видит уже созданного администратора. Раньше оба придумывали свой пароль: в базе оставался пароль одного,
+    # а в admin-password.txt — другого, и «пароль из файла не подходил»
+    con.commit()                      # закрыть неявную транзакцию миграции перед блокировкой
+    con.execute("BEGIN IMMEDIATE")
     seed_venue(con, cfg["MAIN_SLUG"], cfg["MAIN_NAME"], cfg["MAIN_PATH"], "Манеж ДГТУ")
     seed_venue(con, cfg["VENUE_SLUG"], "Ростов Арена", cfg["TEMPLATE_PATH"], "Шаблон по генплану")
     if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -78,6 +85,12 @@ def seed(cfg: dict) -> None:
             people += [("editor@arena.local", "Редактор", "editor12345", "editor"), ("viewer@arena.local", "Наблюдатель", "viewer12345", "viewer")]
         for email, name, pw, role in people:
             con.execute("INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?,?,?,?,?)", (email, name, hash_password(pw), role, now()))
+    elif cfg["ADMIN_PASSWORD"] and cfg["ADMIN_PASSWORD_RESET"]:
+        # ADMIN_PASSWORD_RESET=1: при запуске выставить администратору пароль из ADMIN_PASSWORD (и снять блокировку).
+        # Без этого флага ADMIN_PASSWORD действует только при создании базы — пароль, сменённый в кабинете, не затирается
+        con.execute("""UPDATE users SET password_hash = ?, password_changed_at = ?, token_version = token_version + 1,
+                       failed_logins = 0, locked_until = NULL, is_active = 1 WHERE email = ?""",
+                    (hash_password(cfg["ADMIN_PASSWORD"]), now(), cfg["ADMIN_EMAIL"].lower()))
     migrate(con)   # адреса ссылок для только что созданных записей
     # у объектов без автора автором становится первый администратор — его ссылка покажет их посетителям
     first = con.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").fetchone()
@@ -125,6 +138,9 @@ def create_app(overrides: dict | None = None) -> Flask:
     app.config.update(overrides or {})
     app.config["MAX_CONTENT_LENGTH"] = (max(app.config["MAX_UPLOAD_MB"], app.config["MAX_VIDEO_MB"]) + 1) * 1024 * 1024
     app.config["SECRET_KEY"] = load_secret(app.config)
+    if app.config["TRUST_PROXY"]:
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     backup_on_start(app.config)
     seed(app.config)
     csp = ("default-src 'self'; script-src 'self' " + inline_script_hashes(Path(app.config["FRONTEND_DIR"])) +

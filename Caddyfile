@@ -1,0 +1,6 @@
+# HTTPS для сайта (нужен камере для съёмки панорам и PWA). Сертификат Let's Encrypt Caddy получает сам.
+# Запуск: DOMAIN=map.example.ru docker compose --profile https up -d --build
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8000
+}

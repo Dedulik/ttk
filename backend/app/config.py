@@ -26,8 +26,13 @@ def load() -> dict:
         "CORS_ORIGINS": [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()],
         # первый администратор создаётся при пустой базе. ADMIN_PASSWORD не задан — сервер сам придумывает
         # надёжный пароль и сохраняет его в data/admin-password.txt (а не использует общеизвестный admin12345)
+        # 1 — сервер стоит за прокси (Caddy, nginx): адрес посетителя брать из X-Forwarded-For, иначе все
+        # запросы приходят «с прокси» и защита от подбора пароля блокирует сразу всех
+        "TRUST_PROXY": env("TRUST_PROXY", "0") == "1",
         "ADMIN_EMAIL": env("ADMIN_EMAIL", "admin@arena.local"),
         "ADMIN_PASSWORD": env("ADMIN_PASSWORD", ""),
+        # 1 — при каждом запуске выставлять администратору пароль из ADMIN_PASSWORD (если забыли пароль на сервере)
+        "ADMIN_PASSWORD_RESET": env("ADMIN_PASSWORD_RESET", "0") == "1",
         # учебные записи editor@ / viewer@ с паролями из README — только по явному SEED_DEMO_USERS=1
         "SEED_DEMO_USERS": env("SEED_DEMO_USERS", "0") == "1",
         # регистрация посетителей (роль «посетитель», без доступа к админке)

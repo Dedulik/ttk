@@ -76,9 +76,18 @@ def load_secret(cfg: dict) -> str:
         return cfg["SECRET_KEY"]
     path = Path(cfg["DB_PATH"]).parent / "secret.key"
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text(secrets.token_urlsafe(48), encoding="utf-8")
-        restrict(path)
+    try:
+        # O_EXCL: файл создаёт ровно один процесс; остальные (второй воркер gunicorn) читают уже готовый ключ.
+        # Раньше каждый воркер мог записать свой ключ — и вход «слетал» в зависимости от того, кто ответил
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(secrets.token_urlsafe(48))
+    except FileExistsError:
+        pass
+    for _ in range(50):                                   # другой процесс мог создать файл, но ещё не дописать
+        if path.read_text(encoding="utf-8").strip():
+            break
+        time.sleep(0.05)
     cfg["SECRET_SOURCE"] = "file"
     return path.read_text(encoding="utf-8").strip()
 
