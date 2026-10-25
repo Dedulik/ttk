@@ -33,6 +33,22 @@ export class Plan2D {
     v.x = p.x - (p.x - v.x) * r; v.y = p.y - (p.y - v.y) * r; v.w = nw; v.h *= r; this.render();
   }
 
+  /**
+   * Элемент плана под точкой экрана. Содержимое плана перерисовывается целиком (innerHTML) — и раньше касание
+   * приходило на дочерний элемент, который тут же удалялся. Safari на iPhone после этого перестаёт присылать
+   * движения пальца — карта «залипала». Теперь дочерние элементы не принимают касания (CSS .plan > *),
+   * события всегда приходят на сам <svg>, а что под пальцем — узнаём здесь по координатам.
+   */
+  pick(x, y) {
+    const svg = this.svg;
+    svg.classList.add('hit');
+    const el = document.elementFromPoint(x, y);
+    svg.classList.remove('hit');
+    return el && el !== svg && svg.contains(el) ? el : null;
+  }
+  /** Во время жеста двигаем только видимую область — без перерисовки; полная перерисовка — когда палец отпущен. */
+  moveView() { const v = this.view; this.svg.setAttribute('viewBox', `${v.x} ${v.y} ${v.w} ${v.h}`); this.viewMoved = true; }
+
   bindGestures() {
     const svg = this.svg;
     svg.addEventListener('pointerdown', (e) => {
@@ -45,7 +61,7 @@ export class Plan2D {
         this.gesture = { pinch: true, d0: Math.hypot(a.x - b.x, a.y - b.y), v0: { ...this.view }, c0: this.toWorld((a.x + b.x) / 2, (a.y + b.y) / 2) };
         return;
       }
-      const w = this.toWorld(e.clientX, e.clientY), hit = hitOf(e.target);
+      const w = this.toWorld(e.clientX, e.clientY), hit = hitOf(this.pick(e.clientX, e.clientY));
       const tool = this.h.down?.(w, hit, e) === true;
       this.gesture = { tool, x0: e.clientX, y0: e.clientY, v0: { ...this.view }, s: this.px, moved: false, hit, t0: performance.now() };
     });
@@ -54,9 +70,10 @@ export class Plan2D {
       const w = this.toWorld(e.clientX, e.clientY);
       this.h.hover?.(w);
       // названия меток, точек обзора и зон — подсказкой у курсора (на плане их не пишем, чтобы не загромождать)
-      const el = !this.pointers.size && e.pointerType !== 'touch' && e.target.closest?.('[data-kind="poi"],[data-kind="pano"],[data-kind="shape"],[data-kind="wall"]');
-      const list = el && { poi: this.map.pois, pano: this.map.panos, shape: this.map.shapes, wall: this.map.shapes }[el.dataset.kind];
-      const it = list?.find((x) => x.id === el.dataset.id && x.cat !== 'plaza');
+      const el = !this.pointers.size && e.pointerType !== 'touch' && this.pick(e.clientX, e.clientY)?.closest('[data-kind="poi"],[data-kind="pano"],[data-kind="shape"],[data-kind="wall"]');
+      // во время перетаскивания el = false: тогда подсказки нет (раньше здесь падала ошибка и карта не двигалась)
+      const list = el ? { poi: this.map.pois, pano: this.map.panos, shape: this.map.shapes, wall: this.map.shapes }[el.dataset.kind] : null;
+      const it = list ? list.find((x) => x.id === el.dataset.id && x.cat !== 'plaza') : null;
       if (it?.name) showTip(it.name, e.clientX, e.clientY); else hideTip();
       if (!this.pointers.has(e.pointerId)) return;
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -67,15 +84,16 @@ export class Plan2D {
         const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, rect = svg.getBoundingClientRect();
         const s = nw / rect.width;
         this.view = { x: g.c0.x - (mid.x - rect.left) * s, y: g.c0.y - (mid.y - rect.top) * s, w: nw, h: g.v0.h * r };
-        this.render(); return;
+        this.moveView(); return;
       }
       if (Math.hypot(e.clientX - g.x0, e.clientY - g.y0) > 5) g.moved = true;
       if (g.tool) { this.h.move?.(w, e); return; }
-      if (g.moved) { this.view.x = g.v0.x - (e.clientX - g.x0) * g.s; this.view.y = g.v0.y - (e.clientY - g.y0) * g.s; this.render(); }
+      if (g.moved) { this.view.x = g.v0.x - (e.clientX - g.x0) * g.s; this.view.y = g.v0.y - (e.clientY - g.y0) * g.s; this.moveView(); }
     });
     const up = (e) => {
       if (!this.pointers.has(e.pointerId)) return;
       this.pointers.delete(e.pointerId);
+      if (this.viewMoved && !this.pointers.size) { this.viewMoved = false; this.render(); }
       const g = this.gesture; if (!g) return;
       if (g.pinch) { if (this.pointers.size === 0) this.gesture = null; return; }
       const w = this.toWorld(e.clientX, e.clientY);
@@ -189,7 +207,7 @@ export class Plan2D {
 }
 
 function hitOf(target) {
-  const el = target.closest?.('[data-kind]');
+  const el = target?.closest?.('[data-kind]');   // пусто под пальцем — null
   return el ? { kind: el.dataset.kind, id: el.dataset.id, i: el.dataset.i !== undefined ? +el.dataset.i : undefined } : null;
 }
 

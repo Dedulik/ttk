@@ -544,7 +544,9 @@ body > .trans-video { position: fixed; z-index: 120; }
   .mini { width: 88px; height: 88px; }
   .mascot-peek { width: calc(56px * var(--m)); }
   .mascot-body { height: calc(160px * var(--m)); } .mascot-body.pose { height: calc(172px * var(--m)); }
-  .mascot-cloud { right: 8px; left: 8px; width: auto; bottom: calc(172px * var(--m) + 4px); }
+  /* облако — по ширине экрана, а не узкого блока маскота (иначе уезжало за правый край) */
+  .mascot-cloud { position: fixed; right: 8px; left: 8px; width: auto; bottom: calc(172px * var(--m) + 4px + var(--safe-b)); }
+  .mascot-cloud::after { right: 34px; bottom: -10px; border: 9px solid transparent; border-top-color: var(--accent); border-bottom: 0; }
   .preview-bar { top: calc(56px + var(--safe-t)); font-size: 12px; }
   .pano-tune { left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 48%; }
   .quick { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -629,3 +631,7 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .inp, select.inp, textarea.inp { font-size: 16px; }   /* iOS приближает страницу при фокусе на поле мельче 16 px */
   .iconbtn.flat { min-width: 40px; min-height: 40px; }
 }
+
+/* ---- план: касания всегда приходят на сам <svg> (его содержимое перерисовывается) ---- */
+.plan > * { pointer-events: none; }
+.plan.hit > * { pointer-events: auto; }

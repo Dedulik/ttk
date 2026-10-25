@@ -23,13 +23,26 @@ from .security import hash_password, load_secret, restrict
 
 
 def seed_venue(con, slug: str, name: str, path: str, comment: str) -> None:
-    """Объект из файла карты, если его ещё нет (черновик и опубликованная версия 1)."""
+    """Объект из файла карты: создаёт его (черновик и версия 1) или обновляет, если карту в базе никто не правил."""
     v = con.execute("SELECT id FROM venues WHERE slug = ?", (slug,)).fetchone()
     vid = v["id"] if v else con.execute("INSERT INTO venues (slug, name, created_at) VALUES (?, ?, ?)", (slug, name, now())).lastrowid
-    if not con.execute("SELECT 1 FROM map_drafts WHERE venue_id = ?", (vid,)).fetchone() and Path(path).is_file():
-        raw = json.dumps(json.loads(Path(path).read_text(encoding="utf-8")), ensure_ascii=False)
+    if not Path(path).is_file():
+        return
+    raw = json.dumps(json.loads(Path(path).read_text(encoding="utf-8")), ensure_ascii=False)
+    if not con.execute("SELECT 1 FROM map_drafts WHERE venue_id = ?", (vid,)).fetchone():
         con.execute("INSERT INTO map_drafts (venue_id, data, updated_at) VALUES (?,?,?)", (vid, raw, now()))
         con.execute("INSERT INTO map_versions (venue_id, number, data, comment, published_at) VALUES (?,1,?,?,?)", (vid, raw, comment, now()))
+        return
+    # Файл карты в репозитории обновился (новые фото, точки), а база создана раньше — раньше она навсегда оставалась
+    # со старой картой. Обновляем, только если карту никто не трогал: все версии выпущены сервером из файла
+    # (published_by пуст), а черновик совпадает с последней версией. Карты, которые правили в конструкторе, не трогаем.
+    last = con.execute("SELECT number, data FROM map_versions WHERE venue_id = ? ORDER BY number DESC LIMIT 1", (vid,)).fetchone()
+    draft = con.execute("SELECT data FROM map_drafts WHERE venue_id = ?", (vid,)).fetchone()
+    untouched = not con.execute("SELECT 1 FROM map_versions WHERE venue_id = ? AND published_by IS NOT NULL", (vid,)).fetchone()
+    if last and untouched and json.loads(draft["data"]) == json.loads(last["data"]) and json.loads(last["data"]) != json.loads(raw):
+        con.execute("UPDATE map_drafts SET data = ?, updated_at = ?, revision = revision + 1 WHERE venue_id = ?", (raw, now(), vid))
+        con.execute("INSERT INTO map_versions (venue_id, number, data, comment, published_at) VALUES (?,?,?,?,?)",
+                    (vid, last["number"] + 1, raw, comment + " · обновлено из репозитория", now()))
 
 
 def new_password() -> str:
