@@ -216,20 +216,36 @@ class DemoApi {
 }
 
 /** Выбирает сервер или демо. Адрес сервера можно задать в window.API_BASE (по умолчанию — тот же сайт). */
+/** Сайт открыт с нашего сервера, но он не отвечает (выключен, перезапускается, нет сети). */
+export class ServerDown extends Error {}
+
 export async function createApi() {
   const base = window.API_BASE ?? '';
   if (!window.__FORCE_DEMO__) {
-    // две попытки: медленная сеть или «просыпающийся» сервис-воркер не должны уводить в демо
+    // Демо (данные в браузере, учебные пароли) — только для статической публикации без сервера: там на /api/health
+    // приходит ответ, но не наш. Если же ответа нет вовсе — сервер выключен или перезапускается. Раньше сайт молча
+    // уходил в демо, и настоящий пароль администратора «не подходил». Теперь честно сообщаем, что сервер не отвечает.
+    let answered = false;
     for (const ms of [6000, 10000]) {
       try {
         const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
-        const r = await fetch(base + '/api/health', { signal: ctl.signal }); clearTimeout(t);
-        if (r.ok && (await r.json()).ok) return new ServerApi(base);
-        break;   // ответил не наш сервер (статический хостинг) — сразу демо
-      } catch { /* нет ответа — пробуем ещё раз, потом демо */ }
+        const r = await fetch(base + '/api/health', { signal: ctl.signal, cache: 'no-store' }); clearTimeout(t);
+        answered = true;
+        const j = r.ok ? await r.json().catch(() => null) : null;
+        if (j?.ok) return new ServerApi(base);
+        break;   // ответил не наш сервер (статический хостинг) — демо
+      } catch { /* нет ответа — пробуем ещё раз */ }
     }
+    if (!answered && location.protocol !== 'file:') throw new ServerDown('Сервер не отвечает');
   }
   const d = new DemoApi(); await d.init(); return d;
+}
+
+/** Экран «сервер не отвечает» с кнопкой повтора — вместо молчаливого перехода в демо. */
+export function showServerDown(root) {
+  root.className = 'fatal';
+  root.innerHTML = `<p><b>Сервер карты не отвечает.</b><br>Возможно, он выключен или перезапускается. Проверьте, что он запущен, и повторите.</p>
+    <button class="btn primary" type="button" onclick="location.reload()">Повторить</button>`;
 }
 
 export const ROLE_NAMES = { user: 'Посетитель', viewer: 'Наблюдатель', editor: 'Редактор', admin: 'Администратор' };

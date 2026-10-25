@@ -3,14 +3,16 @@
 //   index.html?object=<адрес>   — любой опубликованный объект
 //   index.html?by=<автор>       — личная ссылка администратора: его объекты
 // Админ-панель — отдельная страница admin.html (старые ссылки #/admin ведут туда же).
-import { createApi, urlSlug } from './core/api.js';
+import { ServerDown, createApi, showServerDown, urlSlug } from './core/api.js';
 import { applySavedTheme } from './core/ui.js';
 
 applySavedTheme();   // светлая или тёмная — как выбрал посетитель в прошлый раз
 
 if (location.hash.startsWith('#/admin')) location.replace('admin.html');
 let root = document.getElementById('app');
-const api = (await createApi()).use(urlSlug());
+let api;
+try { api = (await createApi()).use(urlSlug()); }
+catch (e) { if (e instanceof ServerDown) showServerDown(root); throw e; }
 const by = new URLSearchParams(location.search).get('by');
 
 async function mount() {

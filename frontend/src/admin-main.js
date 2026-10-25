@@ -6,13 +6,15 @@
 //   #/edit/<slug> — конструктор карты объекта
 //   #/register    — регистрация посетителя
 //   #/invite/<токен> — принятие приглашения в команду
-import { can, createApi, isStaff } from './core/api.js';
+import { ServerDown, can, createApi, isStaff, showServerDown } from './core/api.js';
 import { applySavedTheme } from './core/ui.js';
 
 applySavedTheme();
 
 let root = document.getElementById('app');
-const api = await createApi();
+let api;
+try { api = await createApi(); }
+catch (e) { if (e instanceof ServerDown) showServerDown(root); throw e; }
 const editing = () => /^#\/edit\//.test(location.hash);
 
 async function mount() {
