@@ -410,18 +410,34 @@ export class Scene3D {
   buildPois() {
     for (const p of this.map.pois.filter((q) => q.cat !== 'quest' && this.vis(q))) {
       const pz = this.z0(p) + (p.z || 0), c = poiColor(this.map, p), g = (PCATS[p.cat] || PCATS.info).g, img = pointIconImage(p, p.cat, () => this.map && this.setMap(this.map)), red = css('--accent') || '#e30613';
+      // выбранная метка — чуть больше, обводка заменена зелёным неоновым свечением (поле P под свечение)
+      const sel = p.id === this.selId, P = sel ? 9 : 0, k = sel ? 1.22 : 1;
       const pin = this.canvasSprite((x, w, h) => {
+        x.translate(P, P); w -= 2 * P; h -= 2 * P;
         x.fillStyle = 'rgba(0,0,0,.25)'; x.beginPath(); x.ellipse(w / 2, h - 2, 6, 2.2, 0, 0, 2 * PI); x.fill();
-        x.fillStyle = img ? red : c; x.beginPath(); x.moveTo(w / 2 - 6, 26); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 6, 26); x.fill();
-        x.fillStyle = img ? '#fff' : c; x.strokeStyle = img ? red : '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 16, 13.5, 0, 2 * PI); x.fill(); x.stroke();
+        x.fillStyle = sel ? NEON : img ? red : c; x.beginPath(); x.moveTo(w / 2 - 6, 26); x.lineTo(w / 2, h - 3); x.lineTo(w / 2 + 6, 26); x.fill();
+        if (sel) neonRing(x, w / 2, 16, 13.5);
+        x.fillStyle = img ? '#fff' : c; x.strokeStyle = sel ? NEON : img ? red : '#fff'; x.lineWidth = 2.5; x.beginPath(); x.arc(w / 2, 16, 13.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, w / 2 - 9.5, 6.5, 19, 19);
         else { x.fillStyle = '#fff'; x.font = `700 ${g.length > 1 ? 10 : 13}px "PT Sans", sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(g, w / 2, 16.5); }
-      }, 34, 46, 33, { cy: 0, order: 260, depthTest: false });
+      }, 34 + 2 * P, 46 + 2 * P, (33 * (46 + 2 * P) / 46) * k, { cy: P / (46 + 2 * P), order: sel ? 262 : 260, depthTest: false });
       // Раньше: 0,3 м над полом и проверка глубины — внутри стойки, сцены или комнаты с крышей маркер пропадал.
       // Теперь: остриё на верхней грани того, что стоит в этой точке, и маркер рисуется поверх модели и фото 360°
       // (renderOrder 260 > сфера 50 и стрелки 200–202); ближние маркеры перекрывают дальние (сортировка по глубине).
       pin.position.copy(W(p.x, p.y, this.anchorY(p.x, p.y, pz) + 0.05)); pin.userData.ref = p.id; pin.userData.tip = p.name; this.groups.pois.add(pin);
     }
+  }
+  /** Выделить точку (метку или точку обзора) на 3D-карте; null — снять выделение. */
+  setSelected(id) {
+    if ((id || null) === (this.selId || null)) return;
+    this.selId = id || null;
+    if (!this.map) return;
+    const old = new Set([...this.groups.pois.children, ...this.groups.panos.children]);
+    this.screenSprites = this.screenSprites.filter((s) => !old.has(s)); this.culled = this.culled.filter((s) => !old.has(s));
+    clear(this.groups.pois); clear(this.groups.panos);
+    if (this.on('pois')) this.buildPois();
+    if (this.on('panos')) this.buildPanos();
+    this.syncMarkers();
   }
   // «Пиксельная охота»: пиксели ТТК видны только в панорамах, в радиусе 35 м (в конструкторе — всегда)
   buildQuest() {
@@ -467,10 +483,13 @@ export class Scene3D {
     const red = css('--pano') || '#c4121c';
     for (const p of this.map.panos.filter(this.vis)) {
       const img = pointIconImage(p, 'pano', () => this.map && this.setMap(this.map));
+      const sel = p.id === this.selId, P = sel ? 8 : 0;
       const s = this.canvasSprite((x, w, h) => {
-        x.fillStyle = '#fff'; x.strokeStyle = red; x.lineWidth = 2; x.beginPath(); x.arc(w / 2, h / 2, w / 2 - 1.5, 0, 2 * PI); x.fill(); x.stroke();
+        x.translate(P, P); w -= 2 * P; h -= 2 * P;
+        if (sel) neonRing(x, w / 2, h / 2, w / 2 - 1.5);
+        x.fillStyle = '#fff'; x.strokeStyle = sel ? NEON : red; x.lineWidth = 2; x.beginPath(); x.arc(w / 2, h / 2, w / 2 - 1.5, 0, 2 * PI); x.fill(); x.stroke();
         if (img) x.drawImage(img, 3.5, 3.5, w - 7, h - 7);
-      }, 26, 26, 19, { order: 250, depthTest: false });
+      }, 26 + 2 * P, 26 + 2 * P, (19 * (26 + 2 * P) / 26) * (sel ? 1.25 : 1), { order: sel ? 252 : 250, depthTest: false });
       s.userData.tip = p.name;
       s.position.copy(W(p.x, p.y, this.anchorY(p.x, p.y, this.z0(p) + (p.z || 0)) + 0.6)); s.userData.ref = p.id; s.userData.maxDist = 520; this.culled.push(s); this.groups.panos.add(s);
     }
@@ -766,6 +785,13 @@ function clear(g) {
     const o = g.children.pop();
     o.traverse((n) => { n.geometry?.dispose(); if (n.material) { n.material.map?.dispose(); n.material.dispose(); } });
   }
+}
+const NEON = '#39ff14';
+/** Зелёное неоновое свечение вокруг значка выбранной точки (рисуется под самим значком). */
+function neonRing(g, x, y, r) {
+  g.save(); g.strokeStyle = NEON; g.shadowColor = NEON; g.lineWidth = 3;
+  for (const b of [10, 6, 3]) { g.shadowBlur = b; g.beginPath(); g.arc(x, y, r + 1, 0, 2 * PI); g.stroke(); }
+  g.restore();
 }
 function roundRect(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
 function pitchTexture() {

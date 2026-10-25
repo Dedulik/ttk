@@ -125,7 +125,9 @@ export class Plan2D {
     svg.setAttribute('viewBox', `${v.x} ${v.y} ${v.w} ${v.h}`);
     const fs = (n) => (n * px).toFixed(3);
     const off = o.hidden || new Set(), on = (k) => !off.has(k);   // скрытые слои не рисуются и не нажимаются
-    let h = '';
+    // выбранная точка: зелёное неоновое свечение вместо обводки
+    let h = `<defs><filter id="neon" x="-1" y="-1" width="3" height="3"><feGaussianBlur in="SourceGraphic" stdDeviation="${fs(2.6)}" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
+    const neon = (x, y, r) => `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="var(--neon)" stroke-width="${fs(2.6)}" filter="url(#neon)" style="pointer-events:none"/>`;
     if (o.grid && on('grid')) {
       const step = [1, 2, 5, 10, 20, 50].find((st) => st / px >= 14) || 100;
       h += `<defs><pattern id="g1" width="${step}" height="${step}" patternUnits="userSpaceOnUse"><path d="M${step} 0H0V${step}" fill="none" stroke="var(--grid)" stroke-width="${fs(1)}"/></pattern></defs><rect x="${v.x}" y="${v.y}" width="${v.w}" height="${v.h}" fill="url(#g1)"/>`;
@@ -186,18 +188,18 @@ export class Plan2D {
       // точки обзора — значок 360°; название не пишем, оно всплывает при наведении
       for (const p of m.panos.filter(here)) {
         // кружок стал меньше, но прозрачная зона нажатия — прежние 16 px
-        const sel = o.sel === p.id || o.linkFrom?.() === p.id, r = (sel ? 9.5 : 7.5) * px, pano = pointIconUrl(p, 'pano');
-        h += `<g data-kind="pano" data-id="${p.id}"><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="var(--pano)" fill-opacity=".2"/>` : ''}
-          <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="var(--pano)" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${pano}" x="${p.x - r * 0.78}" y="${p.y - r * 0.78}" width="${r * 1.56}" height="${r * 1.56}" style="pointer-events:none"/></g>`;
+        const sel = o.sel === p.id || o.linkFrom?.() === p.id, r = (sel ? 10 : 7.5) * px, pano = pointIconUrl(p, 'pano');
+        h += `<g data-kind="pano" data-id="${p.id}"${sel ? ' class="is-sel"' : ''}><circle cx="${p.x}" cy="${p.y}" r="${fs(16)}" fill="transparent"/>${sel ? neon(p.x, p.y, r) : ''}
+          <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="${sel ? 'var(--neon)' : 'var(--pano)'}" stroke-width="${fs(sel ? 2 : 1.6)}"/><image href="${pano}" x="${p.x - r * 0.78}" y="${p.y - r * 0.78}" width="${r * 1.56}" height="${r * 1.56}" style="pointer-events:none"/></g>`;
       }
     }
     for (const p of on('pois') ? m.pois.filter(here) : []) {
       if (o.filter && p.cat !== o.filter) continue;
       if (p.cat === 'quest' && !o.admin) continue;   // пиксели охоты ищут в панорамах, не на плане
-      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 12 : 10) * px, u = pointIconUrl(p, p.cat);
+      const sel = o.sel === p.id, c = poiColor(m, p), g = (PCATS[p.cat] || PCATS.info).g, r = (sel ? 13 : 10) * px, u = pointIconUrl(p, p.cat);
       // метка — значок ТТК на белом круге (или прежний цветной кружок, если значка для типа нет); название — при наведении
-      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${fs(18)}" fill="transparent"/>${sel ? `<circle cx="${p.x}" cy="${p.y}" r="${fs(18)}" fill="var(--accent)" fill-opacity=".16"/>` : ''}${u
-        ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="${sel ? 'var(--ink)' : 'var(--accent)'}" stroke-width="${fs(sel ? 2.5 : 1.6)}"/><image href="${u}" x="${p.x - r * 0.68}" y="${p.y - r * 0.68}" width="${r * 1.36}" height="${r * 1.36}" style="pointer-events:none"/>`
+      h += `<g data-kind="poi" data-id="${p.id}" class="pin"><circle cx="${p.x}" cy="${p.y}" r="${fs(18)}" fill="transparent"/>${sel ? neon(p.x, p.y, r) : ''}${u
+        ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#fff" stroke="${sel ? 'var(--neon)' : 'var(--accent)'}" stroke-width="${fs(sel ? 2 : 1.6)}"/><image href="${u}" x="${p.x - r * 0.68}" y="${p.y - r * 0.68}" width="${r * 1.36}" height="${r * 1.36}" style="pointer-events:none"/>`
         : `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="${fs(2)}"/><text x="${p.x}" y="${p.y}" font-size="${fs(g.length > 1 ? 8 : 11)}" class="t-glyph">${esc(g)}</text>`}</g>`;
     }
     if (o.sel?.startsWith('sec:')) { const sec = SECTORS.find((x) => x.id === o.sel.slice(4)); if (sec) h += `<polygon points="${pts(secPts(sec))}" fill="none" stroke="var(--ink)" stroke-width="${fs(2.5)}" style="pointer-events:none"/>`; }

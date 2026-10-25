@@ -68,7 +68,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
         <button class="iconbtn look-exit" data-act="exitLook" hidden aria-label="Выйти из панорамы">${icon('back')}</button>
         <div class="pano-tune" id="tune" hidden></div>
       </div>
-      <section class="sheet"><div class="sheet-grip"><i></i></div><div class="sheet-body"></div></section>
+      <section class="sheet"><button class="sheet-grip" type="button" aria-label="Развернуть панель"><i></i></button><div class="sheet-body"></div></section>
     </div>
   </div>`;
   const svg = $('.plan', root), three = $('.three', root), sheet = new Sheet($('.sheet', root));
@@ -138,7 +138,7 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     // после отмены этаж мог исчезнуть — возвращаемся на нижний
     if (!map.floors.some((f) => f.id === state.floor)) { state.floor = groundId(); scene?.setFloorView(map.floors.length > 1 ? state.floor : null); }
     if ($('#floorBar')) floorBar();
-    state.under = underlayOf(map); plan.set({ floor: state.floor, underlay: state.under, sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); }
+    state.under = underlayOf(map); plan.set({ floor: state.floor, underlay: state.under, sel: selRef(), showPanos: state.mode !== 'build' || state.sel?.type === 'pano', underlayOpacity: state.mode === 'build' ? state.underOp : Math.min(state.underOp, 0.12) }); scene?.setSelected(selRef()); }
   function rebuildLater() { if (!scene) return; clearTimeout(rebuildT); rebuildT = setTimeout(() => scene.setMap(map), 450); }
   function toolbar() {
     const list = state.readonly ? [TOOLS.build[0]] : TOOLS[state.mode];
@@ -604,6 +604,8 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
   function openTune(p) {
     if (state.readonly) return;
     tune = { id: p.id, orig: tunePick(p), cur: tunePick(p) };
+    // на телефоне шторка с карточкой точки закрывала полпанорамы — опускаем её, панорама остаётся на виду
+    if (!matchMedia('(min-width: 900px)').matches) sheet.snap('peek');
     scene.onLook = () => { const el = $('#tuneAt', root); if (el && scene.look) el.textContent = `взгляд ${norm(scene.look.yaw * RADD)}° · наклон ${Math.round(scene.look.pitch * RADD)}°`; };
     renderTune();
   }
@@ -624,17 +626,19 @@ export function editor(root, api, user, draft, lock = { mine: true }) {
     const p = tunePano(), el = $('#tune', root); if (!p || !el) return;
     const c = tune.cur, nb = neighbors(map, p.id), photo = !!p.img;
     el.hidden = false;
-    el.innerHTML = `<div class="row nowrap" style="justify-content:space-between"><b>Настройка панорамы</b><span class="cap mono" id="tuneAt"></span></div>
+    el.classList.toggle('min', !!tune.min);
+    el.innerHTML = `<div class="row nowrap tune-head" style="justify-content:space-between"><b>Настройка панорамы</b><span class="cap mono" id="tuneAt"></span><button class="iconbtn flat tune-min" data-act="tuneMin" aria-label="${tune.min ? 'Развернуть настройки' : 'Свернуть настройки'}" aria-expanded="${!tune.min}">${icon('chevron')}</button></div>
       ${photo ? `<div class="tune-row"><span class="cap">Поворот фото · <b class="mono">${norm(c.photoRot)}°</b></span><div class="row nowrap"><button class="btn sm" data-act="tuneRot" data-d="-5">↺ 5°</button><button class="btn sm" data-act="tuneRot" data-d="-1">↺ 1°</button><button class="btn sm" data-act="tuneRot" data-d="1">↻ 1°</button><button class="btn sm" data-act="tuneRot" data-d="5">↻ 5°</button><button class="btn sm" data-act="tuneRot" data-d="90">↻ 90°</button></div></div>` : '<p class="cap" style="margin:0">Вид из 3D-модели: фото нет, поворачивать нечего.</p>'}
       <div class="tune-row"><span class="cap">Вид при открытии · ${c.view ? `<b class="mono">${norm(c.view.u)}°, наклон ${Math.round(c.view.pitch)}°</b>` : 'по направлению на соседнюю точку'}</span><div class="row nowrap"><button class="btn sm" data-act="tuneView">Запомнить текущий вид</button>${c.view ? '<button class="btn sm ghost" data-act="tuneViewRm">Сбросить</button>' : ''}</div></div>
-      ${photo && nb.length ? `<div class="tune-row"><span class="cap">Стрелки переходов: повернитесь туда, где на фото видна соседняя точка, и нажмите «Сюда» — стрелка встанет в центр экрана. «Совместить» поворачивает всё фото так, чтобы стрелка по плану совпала с этим местом.</span>
+      ${photo && nb.length ? `<div class="tune-row"><span class="cap tune-help">Стрелки переходов: повернитесь туда, где на фото видна соседняя точка, и нажмите «Сюда» — стрелка встанет в центр экрана. «Совместить» поворачивает всё фото так, чтобы стрелка по плану совпала с этим местом.</span>
         <div class="tune-arrows">${nb.map((q) => `<div class="row nowrap"><span class="t2"><b>${esc(q.name)}</b><span>${Number.isFinite(c.arrows[q.id]) ? `вручную · ${norm(c.arrows[q.id])}°` : 'по плану'}</span></span>
           <button class="btn sm" data-act="tuneArrow" data-id="${q.id}">Сюда</button><button class="btn sm ghost" data-act="tuneAlign" data-id="${q.id}">Совместить</button>${Number.isFinite(c.arrows[q.id]) ? `<button class="iconbtn flat" data-act="tuneArrowRm" data-id="${q.id}" aria-label="Стрелка по плану">${icon('close')}</button>` : ''}</div>`).join('')}</div></div>` : ''}
-      <div class="row"><button class="btn sm primary" data-act="tuneSave" ${tuneDirty() ? '' : 'disabled'}>${icon('check')}Сохранить</button><button class="btn sm" data-act="tuneCancel" ${tuneDirty() ? '' : 'disabled'}>Отменить изменения</button><button class="btn sm ghost danger" data-act="tuneReset">Сбросить всё</button></div>`;
+      <div class="row tune-save"><button class="btn sm primary" data-act="tuneSave" ${tuneDirty() ? '' : 'disabled'}>${icon('check')}Сохранить</button><button class="btn sm" data-act="tuneCancel" ${tuneDirty() ? '' : 'disabled'}>Отменить изменения</button><button class="btn sm ghost danger" data-act="tuneReset">Сбросить всё</button></div>`;
     scene?.onLook?.();
   }
   function tuneAct(a, t) {
     const c = tune.cur, L = scene.look, phi = (c.photoRot || 0) / RADD;
+    if (a === 'tuneMin') { tune.min = !tune.min; return renderTune(); }
     if (a === 'tuneRot') c.photoRot = norm(c.photoRot + +t.dataset.d);
     if (a === 'tuneView') c.view = { u: norm((L.yaw + phi) * RADD), pitch: Math.round(L.pitch * RADD), fov: Math.round(L.fov) };
     if (a === 'tuneViewRm') c.view = null;

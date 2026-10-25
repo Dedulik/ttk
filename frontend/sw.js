@@ -2,7 +2,7 @@
 // Кэшируем только то, что и так публично: код и картинки сайта, опубликованные карты, фото панорам.
 // Никогда не кэшируем: вход, профиль, черновики, команду, журнал, приглашения — всё под /api/, кроме
 // опубликованной карты и /api/health; страницу и код админ-панели — тоже нет.
-const VERSION = 'arena-v3';
+const VERSION = 'arena-v4';
 const STATIC = `${VERSION}-static`, DATA = `${VERSION}-data`, MEDIA = `${VERSION}-media`;
 const SHELL = ['./', './index.html', './src/styles.css', './src/main.js', './manifest.webmanifest', './assets/icon-192.png'];
 

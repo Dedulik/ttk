@@ -88,7 +88,7 @@ export function openCapture({ key, title }) {
         <label class="field"><span class="lbl">Камера</span><select class="inp sm" id="capCam"></select></label>
         <label class="field"><span class="lbl">Угол обзора камеры · <b id="capFovV"></b>°</span><input type="range" id="capFov" min="50" max="120" step="1"></label>
         <span class="cap" style="font-size:12px">Если на панораме видны швы или двоение — подберите угол и соберите заново.</span>
-        <button class="btn sm danger" data-c="reset">Начать съёмку заново</button>
+        <button class="btn sm danger" data-c="reset">Удалить все кадры и начать заново</button>
       </div>
       <div class="cap-start" id="capStart">
         <div class="card">
@@ -101,7 +101,7 @@ export function openCapture({ key, title }) {
       </div>
       <div class="cap-bottom">
         <div class="cap-thumbs" id="capThumbs"></div>
-        <div class="cap-actions"><button class="btn" data-c="stitch" id="capStitch" disabled>Собрать</button><button class="cap-shutter" data-c="shoot" aria-label="Сделать снимок"></button><span class="cap-count" id="capCount">0/16</span></div>
+        <div class="cap-actions"><button class="btn" data-c="stitch" id="capStitch" disabled>Собрать</button><button class="cap-shutter" data-c="shoot" aria-label="Сделать снимок"></button><span class="cap-right"><button class="btn sm cap-clear" data-c="clear" id="capClear" hidden>${icon('erase')}<span>Очистить все</span></button><span class="cap-count" id="capCount">0/16</span></span></div>
       </div>
       <div class="cap-busy" id="capBusy" hidden><div class="card"><b id="capBusyT">Собираю панораму…</b><div class="qbar"><i id="capBar" style="width:0%"></i></div><span class="cap" id="capBusyS"></span></div></div>`;
     document.body.append(el);
@@ -128,6 +128,7 @@ export function openCapture({ key, title }) {
       $('#capThumbs').innerHTML = S.shots.map((s, i) => `<button class="cap-th${i === S.cur ? ' on' : ''}${s ? ' done' : ''}" data-t="${i}" aria-label="Кадр ${i + 1}${s ? ' — переснять' : ''}">${s ? `<img src="${s.thumb}" alt="">` : i + 1}</button>`).join('');
       const n = S.shots.filter(Boolean).length;
       $('#capCount').textContent = `${n}/16`;
+      $('#capClear').hidden = !n;
       $('#capStitch').disabled = n < 8 || S.shots.slice(0, 8).some((x) => !x);
       $('#capStitch').classList.toggle('primary', n === 16);
       $('#capTitle').textContent = n === 16 && !S.retake ? 'Все кадры сняты' : `${S.retake ? 'Пересъёмка' : 'Кадр'} ${S.cur + 1} из 16`;
@@ -259,6 +260,12 @@ export function openCapture({ key, title }) {
     }
     function onOrient(e) { if (e.alpha === null && e.beta === null) return; gotEvent = true; S.sensors = true; S.o = { alpha: e.alpha, beta: e.beta, gamma: e.gamma }; }
 
+    /** Удалить все снятые кадры (и сохранённую в браузере съёмку) — съёмка начинается с первого кадра. */
+    async function clearAll() {
+      S.shots = Array(16).fill(null); S.yaw0 = null; S.cur = 0; S.retake = false; S.needAnchor = false;
+      await dropSession(key); thumbs(); $('#capSet').hidden = true; toast('Все кадры удалены — снимайте с первого');
+    }
+
     // ---------- склейка ----------
     async function stitch() {
       if (S.busy) return;
@@ -271,13 +278,16 @@ export function openCapture({ key, title }) {
           const x = cv.getContext('2d', { willReadFrequently: true }); x.drawImage(bmp, 0, 0, cv.width, cv.height); bmp.close?.();
           const d = x.getImageData(0, 0, cv.width, cv.height);
           let sum = 0; for (let i = 0; i < d.data.length; i += 64) sum += d.data[i] + d.data[i + 1] + d.data[i + 2];
-          shots.push({ data: d.data.buffer, w: cv.width, h: cv.height, fwd: s.fwd, up: s.up, right: s.right, mean: sum / (d.data.length / 64) });
+          shots.push({ data: d.data.buffer, w: cv.width, h: cv.height, fwd: s.fwd, up: s.up, right: s.right, manual: !!s.manual, mean: sum / (d.data.length / 64) });
         }
         // выравниваем яркость кадров (автоэкспозиция телефона): мягко к общей средней
         const avg = shots.reduce((a, s) => a + s.mean, 0) / shots.length;
         for (const s of shots) s.gain = Math.max(0.8, Math.min(1.25, Math.sqrt(avg / Math.max(1, s.mean))));
-        $('#capBusyS').textContent = 'Склеиваю 360°…';
-        const data = await runStitch(shots, S.fov, (p) => { $('#capBar').style.width = `${Math.round(p * 100)}%`; });
+        $('#capBusyS').textContent = 'Выравниваю кадры по изображению…';
+        const data = await runStitch(shots, S.fov, !S.fovSet, (p) => {
+          $('#capBar').style.width = `${Math.round(p * 100)}%`;
+          if (p >= 0.3) $('#capBusyS').textContent = 'Склеиваю 360°…';
+        });
         const cv = document.createElement('canvas'); cv.width = OUT_W; cv.height = OUT_W / 2;
         cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(data), OUT_W, OUT_W / 2), 0, 0);
         const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.88));
@@ -321,14 +331,24 @@ export function openCapture({ key, title }) {
       if (c === 'shoot') shoot();
       if (c === 'stitch') stitch();
       if (c === 'settings') { $('#capSet').hidden = !$('#capSet').hidden; $('#capFov').value = S.fov; $('#capFovV').textContent = S.fov; }
-      if (c === 'reset') { S.shots = Array(16).fill(null); S.yaw0 = null; S.cur = 0; await dropSession(key); thumbs(); $('#capSet').hidden = true; toast('Съёмка начата заново'); }
+      if (c === 'reset') await clearAll();
+      if (c === 'clear') {
+        // удалить все кадры одним нажатием: первое нажатие спрашивает подтверждение, второе (в течение 3 с) удаляет
+        if (!t.classList.contains('confirm')) {
+          t.classList.add('confirm'); t.querySelector('span').textContent = 'Удалить все кадры?';
+          clearTimeout(S.clearT); S.clearT = setTimeout(() => { t.classList.remove('confirm'); t.querySelector('span').textContent = 'Очистить все'; }, 3000);
+          return;
+        }
+        clearTimeout(S.clearT); t.classList.remove('confirm'); t.querySelector('span').textContent = 'Очистить все';
+        await clearAll();
+      }
     });
     thumbs();
   });
 }
 
 /** Склейка в Web Worker (не подвешивает интерфейс); если воркеры недоступны — бросает ошибку с понятным текстом. */
-function runStitch(shots, fovLong, onProgress) {
+function runStitch(shots, fovLong, fitFov, onProgress) {
   return new Promise((resolve, reject) => {
     let w;
     try { w = new Worker(new URL('./stitch-worker.js', import.meta.url)); } catch (e) { reject(new Error('браузер не поддерживает фоновую обработку')); return; }
@@ -337,6 +357,6 @@ function runStitch(shots, fovLong, onProgress) {
       if (e.data.done) { w.terminate(); resolve(e.data.data); }
     };
     w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'ошибка склейки')); };
-    w.postMessage({ w: OUT_W, h: OUT_W / 2, shots, fovLong }, shots.map((s) => s.data));
+    w.postMessage({ w: OUT_W, h: OUT_W / 2, shots, fovLong, fitFov }, shots.map((s) => s.data));
   });
 }

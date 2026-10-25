@@ -121,41 +121,25 @@ export function photo(name) {
 }
 
 /**
- * Нижняя шторка как в картографических приложениях: тянется пальцем, три положения.
- * На широком экране превращается в боковую панель (CSS), перетаскивание выключается.
+ * Нижняя шторка: стрелка сверху по центру раскрывает её полностью, повторное нажатие опускает в самое
+ * низкое положение. Оба положения фиксированы — пальцем шторку не тянут. Программа может открыть её
+ * наполовину (карточка места), стрелка тогда раскрывает полностью.
+ * На широком экране превращается в боковую панель (CSS), стрелка скрыта.
  */
 export class Sheet {
   constructor(el, { onSnap } = {}) {
     this.el = el; this.body = el.querySelector('.sheet-body'); this.onSnap = onSnap; this.state = 'half';
-    const grip = el.querySelector('.sheet-grip');
-    let y0 = 0, h0 = 0, dragging = false, moved = 0;
-    const desktop = () => matchMedia('(min-width: 900px)').matches;
-    const start = (e) => {
-      if (desktop()) return;
-      dragging = true; moved = 0; y0 = e.clientY; h0 = el.getBoundingClientRect().height;
-      el.style.transition = 'none'; grip.setPointerCapture?.(e.pointerId);
-    };
-    const move = (e) => {
-      if (!dragging) return;
-      moved = Math.abs(e.clientY - y0);
-      el.style.height = Math.max(96, Math.min(this.max(), h0 - (e.clientY - y0))) + 'px';
-    };
-    const end = () => {
-      if (!dragging) return;
-      dragging = false; el.style.transition = '';
-      if (moved < 6) { this.snap(this.state === 'peek' ? 'half' : this.state === 'half' ? 'full' : 'peek'); return; }
-      const h = el.getBoundingClientRect().height, opts = { peek: this.peekH(), half: this.halfH(), full: this.max() };
-      this.snap(Object.entries(opts).sort((a, b) => Math.abs(a[1] - h) - Math.abs(b[1] - h))[0][0]);
-    };
-    grip.addEventListener('pointerdown', start);
-    const opt = { signal: window.__ac?.signal };
-    window.addEventListener('pointermove', move, opt);
-    window.addEventListener('pointerup', end, opt);
-    window.addEventListener('pointercancel', end, opt);
-    window.addEventListener('resize', () => this.snap(this.state), opt);
+    this.grip = el.querySelector('.sheet-grip');
+    this.grip.addEventListener('click', () => this.snap(this.state === 'full' ? 'peek' : 'full'));
+    window.addEventListener('resize', () => this.snap(this.state), { signal: window.__ac?.signal });
   }
   avail() { return this.el.parentElement.getBoundingClientRect().height - (parseFloat(getComputedStyle(this.el).bottom) || 0); }
-  max() { return this.avail() - 8; }
+  /** Полностью раскрытая шторка останавливается под верхней панелью (поиск), иначе та закрывала бы стрелку. */
+  max() {
+    const tb = this.el.parentElement.querySelector('.topbar');
+    const gap = tb && !tb.hidden && tb.offsetHeight ? tb.getBoundingClientRect().bottom - this.el.parentElement.getBoundingClientRect().top + 6 : 8;
+    return this.avail() - gap;
+  }
   peekH() { return this.peek ?? 112; }
   halfH() { return Math.round(this.avail() * 0.46); }
   snap(state) {
@@ -163,6 +147,8 @@ export class Sheet {
     if (matchMedia('(min-width: 900px)').matches) { this.el.style.height = ''; return; }
     const h = state === 'peek' ? this.peekH() : state === 'half' ? this.halfH() : this.max();
     this.el.style.height = h + 'px'; this.el.dataset.state = state; this.onSnap?.(state);
+    const full = state === 'full';
+    this.grip.setAttribute('aria-label', full ? 'Свернуть панель' : 'Развернуть панель'); this.grip.setAttribute('aria-expanded', full);
   }
   set(html, state) { this.body.innerHTML = html; this.body.scrollTop = 0; if (state) this.snap(state); }
 }

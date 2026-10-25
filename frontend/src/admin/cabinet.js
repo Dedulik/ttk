@@ -24,7 +24,7 @@ export function loginScreen(root, api, mode = 'login') {
   const reg = mode === 'register';
   root.innerHTML = `
   <div class="login"><form id="lf" novalidate>
-    <img class="hero" src="${photo('facade')}" alt="">
+    <img class="hero" src="${photo('login-mascot')}" alt="Маскот ТТК машет рукой">
     <div class="seg auth-tabs" role="tablist"><a href="#/" role="tab" aria-selected="${!reg}" aria-pressed="${!reg}">Вход</a><a href="#/register" role="tab" aria-selected="${reg}" aria-pressed="${reg}">Регистрация</a></div>
     <div><h1>${reg ? 'Регистрация' : 'Вход'}</h1><p class="cap">${reg ? 'Личный кабинет посетителя и «Пиксельная охота» на картах' : 'Для посетителей, сотрудников и администраторов'}</p></div>
     ${reg ? '<label class="field"><span class="lbl">Имя</span><input class="inp" id="ln" autocomplete="name" maxlength="80" required></label>' : ''}
@@ -363,14 +363,6 @@ export async function cabinet(root, api, user, section) {
         ${check(rep.admins >= 2, 'Администраторов: ' + rep.admins, rep.admins >= 2 ? 'Доступ не потеряется, если один уйдёт в отпуск' : 'Добавьте второго администратора на случай потери пароля')}
         ${check(!rep.locked.length, 'Заблокированные записи', rep.locked.length ? rep.locked.map(esc).join(', ') + ' — разблокировать можно в разделе «Команда»' : 'Нет')}
         ${check(rep.failed_today < 10, 'Неудачных входов сегодня: ' + rep.failed_today, rep.failed_today < 10 ? 'Похоже на обычные опечатки' : 'Много — возможно, кто-то подбирает пароль')}
-      </ul></section>
-      <section class="card"><h2 style="font-size:16px">Как защищена база</h2><ul class="bullets">
-        <li>Пароли хранятся только как хэш PBKDF2-SHA256 (200 000 итераций, своя соль) — даже из копии базы их не прочитать.</li>
-        <li>5 неверных паролей подряд — запись блокируется на 15 минут; с одного IP — не больше 20 ошибок за 10 минут.</li>
-        <li>Смена пароля, отключение сотрудника или «выйти везде» сразу отзывают все его сеансы. Сеанс живёт ${Math.round(rep.token_ttl_min / 60)} ч.</li>
-        <li>Права проверяет сервер при каждом запросе; запросы к базе параметризованы — SQL-инъекции не пройдут.</li>
-        <li>Заголовки CSP, nosniff и запрет встраивания страниц на чужих сайтах; ответы API не кэшируются.</li>
-        <li>Удалённые записи затираются на диске (secure_delete). Файл базы — ${size(rep.db_size)}, доступен только владельцу.</li>
       </ul></section>
       <section class="card"><h2 style="font-size:16px">Резервные копии</h2>
         <p class="cap" style="margin:0">Сервер сохраняет копию базы при каждом запуске (последние 10 — в папке backend/data/backups). Скачайте копию перед крупными изменениями и храните её отдельно: в ней хэши паролей.</p>

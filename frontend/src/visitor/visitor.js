@@ -98,7 +98,7 @@ export async function mountVisitor(root, api) {
         <div class="row" id="ldActs" hidden><button class="btn sm primary" data-act="ldRetry">Повторить</button><button class="btn sm" data-act="ldSkip">Показать без фото</button></div></div></div>
       ${pub.draft ? `<div class="preview-bar">${icon('eye')}<span><b>Черновик</b> — так карту увидят после публикации</span><a class="btn sm" href="admin.html#/edit/${encodeURIComponent(slug)}">В конструктор</a></div>` : ''}
     </div>
-    <section class="sheet"><div class="sheet-grip"><i></i></div><div class="sheet-body"></div></section>
+    <section class="sheet"><button class="sheet-grip" type="button" aria-label="Развернуть панель"><i></i></button><div class="sheet-body"></div></section>
   </div>`;
 
   const S = { view: '3d', sel: null, route: null, routeFrom: null, look: null, list: null, floor: floors[0].id, busy: false, tok: 0 };
@@ -220,7 +220,7 @@ export async function mountVisitor(root, api) {
   }
   function bboxOf(p) { const xs = p.map((q) => q[0]), ys = p.map((q) => q[1]), x = Math.min(...xs), y = Math.min(...ys); return [x, y, Math.max(...xs) - x, Math.max(...ys) - y]; }
 
-  function sync() { plan.set({ sel: S.sel }); }
+  function sync() { plan.set({ sel: S.sel }); scene.setSelected(S.sel); }
 
   // ---------- выбор и камера ----------
   function pickRef(ref) {
